@@ -2,7 +2,9 @@
 
 A lightweight macOS menu bar monitor for Apple Silicon Macs: live **CPU / GPU / SSD temperatures**, **RAM**, **swap**, **CPU load**, and **disk space** — with history graphs, no dependencies, and no sudo.
 
-![MacTemp menu bar](assets/mactemp-bar.png)
+| Menu bar readout | Menu dropdown with live graphs |
+|---|---|
+| ![MacTemp menu bar](assets/mactemp-bar.png) | <img src="assets/mactemp-menu.png" width="320" alt="MacTemp dropdown"> |
 
 ## Features
 
@@ -12,10 +14,6 @@ A lightweight macOS menu bar monitor for Apple Silicon Macs: live **CPU / GPU / 
 - **°C / °F toggle** and 3 menu-bar layouts (temps only / temps + RAM / compact)
 - **No dependencies** — pure Swift + a small C helper, built with `swiftc`, no SPM/Xcode project
 - **No sudo, no helper daemon** — reads SMC + IOHID + Mach VM stats directly
-
-| Menu dropdown with live graphs |
-|---|
-| ![MacTemp dropdown](assets/mactemp-menu.png) |
 
 ## What's monitored
 
@@ -63,7 +61,18 @@ Requires Xcode Command Line Tools (`swiftc` + `clang`).
 - **hid_temp.c** → `libhidtemp.dylib` — IOHID reader for the NVMe NAND temperature sensor
 - **hidtemp.h** — Swift bridging header for the IOHID library
 - **icon_draw.swift** — generates the app icon programmatically (→ `MacTemp.icns`)
-- **tools/click_status.swift** — QA helper that clicks the status item via the Accessibility API
+- **tools/crop_shots.py** — composites the README screenshots onto dark cards
+
+### Regenerating the screenshots
+
+```bash
+MAC_TEMP_SELFTEST=1 MAC_TEMP_DEMO=1 ./MacTemp.app/Contents/MacOS/MacTemp  # captures app-only windows
+python3 tools/crop_shots.py                                              # -> assets/*.png
+```
+
+`MAC_TEMP_SELFTEST` opens the menu and captures only MacTemp's own windows (the open
+menu via `screencapture -l`, the status-item button via AppKit `cacheDisplay`) — no
+desktop behind them. `MAC_TEMP_DEMO` seeds a plausible history so the graphs render.
 
 ## Credits
 
