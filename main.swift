@@ -481,21 +481,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ramText = (s.ramUsed.map { formatBytes($0) }) ?? "--"
 
         // Menu bar text, colored per temperature level (yellow = warning, red = hot).
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        // Full-strength labelColor everywhere: secondaryLabelColor is unreadable over
+        // a translucent bar on a busy wallpaper.
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         let attr = NSMutableAttributedString()
         func append(_ text: String, _ color: NSColor) {
             attr.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
         }
         switch barMode {
         case .tempsOnly:
-            append("C ", .secondaryLabelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
-            append("  G ", .secondaryLabelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
-            append("  S ", .secondaryLabelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
+            append("C ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("  G ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
+            append("  S ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
         case .tempsPlusRAM:
-            append("C ", .secondaryLabelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
-            append("  G ", .secondaryLabelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
-            append("  S ", .secondaryLabelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
-            append("  R ", .secondaryLabelColor); append(ramText, .labelColor)
+            append("C ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("  G ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
+            append("  S ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
+            append("  R ", .labelColor); append(ramText, .labelColor)
         case .compact:
             let temps = [s.cpuTemp, s.gpuTemp, s.ssdTemp].compactMap { $0 }
             let hottestColor = temps.map { TempLevel.level($0) }.max(by: { $0.rank < $1.rank })?.color ?? NSColor.labelColor
