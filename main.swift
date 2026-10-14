@@ -569,16 +569,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func openMenuForScreenshot(captureAfter: TimeInterval = 1.2) {
         refresh()
         guard let button = statusItem.button, let menu = statusItem.menu else { return }
+        // The status item lives in its own window — grab its id before the menu opens.
+        var statusWinID = 0
+        if let w = button.window { statusWinID = w.windowNumber }
+        if let w = button.window, let scr = w.screen {
+            let f = button.convertToScreen(button.frame)
+            let g = scr.convertToBaseDisplayPoint(f.origin)
+            let scale = scr.backingScaleFactor
+            let px = scr.convertPoint(toView: NSPoint(x: g.x, y: scr.frame.height - g.y))
+            print("BARPOS x=\(f.origin.x) ytop=\(f.origin.y) w=\(f.width) h=\(f.height) scale=\(scale) px_x=\(px.x) px_ytop=\(scr.frame.height - f.origin.y - f.height) screen=\(scr.frame)")
+        }
         let capture = Timer(timeInterval: captureAfter, repeats: false) { _ in
-            for i in 0..<NSScreen.screens.count {
-                let path = FileManager.default.currentDirectoryPath + "/screenshot_\(i).png"
+            // full-screen pass FIRST, while the menu is still open
+            let full = FileManager.default.currentDirectoryPath + "/win_full.png"
+            let pf = Process()
+            pf.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            pf.arguments = ["-x", full]
+            try? pf.run()
+            pf.waitUntilExit()
+            if pf.terminationStatus == 0 { print("saved \(full)") }
+            // Enumerate on-screen windows: capture only OUR app's windows
+            // (status item + open menu) — nothing behind them.
+            let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+            let info = (CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]) ?? []
+            var mine: [(id: Int, name: String, area: CGFloat)] = []
+            for w in info {
+                let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+                let num = w[kCGWindowNumber as String] as? Int ?? 0
+                let layer = w[kCGWindowLayer as String] as? Int ?? -1
+                let name = w[kCGWindowName as String] as? String ?? ""
+                var area: CGFloat = 0
+                var boundsDesc = ""
+                if let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                   let ww = bounds["Width"] as? CGFloat, let hh = bounds["Height"] as? CGFloat {
+                    area = ww * hh
+                    boundsDesc = "x=\(bounds["X"] ?? 0) y=\(bounds["Y"] ?? 0) w=\(ww) h=\(hh)"
+                }
+                print("owner=\(owner) id=\(num) layer=\(layer) name=\(name) area=\(area) \(boundsDesc)")
+                guard owner == "MacTemp" else { continue }
+                if area > 100 { mine.append((num, name, area)) }
+            }
+            for w in mine {
+                let tag = (w.id == statusWinID) ? "bar" : "menu"
+                let path = FileManager.default.currentDirectoryPath + "/win_\(tag).png"
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                p.arguments = ["-x", path]
+                p.arguments = ["-x", "-o", "-l", String(w.id), path]
                 try? p.run()
                 p.waitUntilExit()
                 if p.terminationStatus == 0 { print("saved \(path)") }
             }
+            // full-screen pass for cropping the menu-bar strip (status text lives in Window Server's bar)
+            let full = FileManager.default.currentDirectoryPath + "/win_full.png"
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", full]
+            try? p.run()
+            p.waitUntilExit()
+            if p.terminationStatus == 0 { print("saved \(full)") }
             exit(0)   // screencapture done; popUp blocks until we leave
         }
         RunLoop.main.add(capture, forMode: .common)
@@ -740,7 +788,7 @@ if ProcessInfo.processInfo.environment["MAC_TEMP_SELFTEST"] != nil {
     app.setActivationPolicy(.accessory)
     let delegate = AppDelegate()
     app.delegate = delegate
-    if demo { delegate.demoSeed = demoHistory(count: 90) }
+    if demo { delegate.demoSeed = demoHistory(count: 40) }
     DispatchQueue.main.asyncAfter(deadline: .now() + (demo ? 0.5 : 4)) {
         delegate.openMenuForScreenshot()
         exit(0)

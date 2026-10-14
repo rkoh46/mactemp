@@ -31,3 +31,5 @@ screenshot_*.png
 assets/menu_*.png
 tools/click_status
 test_shot.png
+win_*.png
+probe_*.png
