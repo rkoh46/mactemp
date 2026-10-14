@@ -572,13 +572,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The status item lives in its own window — grab its id before the menu opens.
         var statusWinID = 0
         if let w = button.window { statusWinID = w.windowNumber }
-        if let w = button.window, let scr = w.screen {
-            let f = button.convertToScreen(button.frame)
-            let g = scr.convertToBaseDisplayPoint(f.origin)
-            let scale = scr.backingScaleFactor
-            let px = scr.convertPoint(toView: NSPoint(x: g.x, y: scr.frame.height - g.y))
-            print("BARPOS x=\(f.origin.x) ytop=\(f.origin.y) w=\(f.width) h=\(f.height) scale=\(scale) px_x=\(px.x) px_ytop=\(scr.frame.height - f.origin.y - f.height) screen=\(scr.frame)")
-        }
         let capture = Timer(timeInterval: captureAfter, repeats: false) { _ in
             // full-screen pass FIRST, while the menu is still open
             let full = FileManager.default.currentDirectoryPath + "/win_full.png"
@@ -619,14 +612,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 p.waitUntilExit()
                 if p.terminationStatus == 0 { print("saved \(path)") }
             }
-            // full-screen pass for cropping the menu-bar strip (status text lives in Window Server's bar)
-            let full = FileManager.default.currentDirectoryPath + "/win_full.png"
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            p.arguments = ["-x", full]
-            try? p.run()
-            p.waitUntilExit()
-            if p.terminationStatus == 0 { print("saved \(full)") }
+            // The status item lives in Window Server's bar, so screencapture -l can't get
+            // just our part — render the button itself to a PNG instead.
+            if let rep = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
+                button.cacheDisplay(in: button.bounds, to: rep)
+                let img = NSImage(size: button.bounds.size)
+                img.addRepresentation(rep)
+                if let tiff = img.tiffRepresentation,
+                   let bmp = NSBitmapImageRep(data: tiff),
+                   let png = bmp.representation(using: .png, properties: [:]) {
+                    let path = FileManager.default.currentDirectoryPath + "/bar_button.png"
+                    try? png.write(to: URL(fileURLWithPath: path))
+                    print("saved \(path) (\(button.bounds))")
+                }
+            }
             exit(0)   // screencapture done; popUp blocks until we leave
         }
         RunLoop.main.add(capture, forMode: .common)
