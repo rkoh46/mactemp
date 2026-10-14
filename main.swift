@@ -349,8 +349,8 @@ enum TempUnit: Int {
 
 // MARK: - Menu bar display mode
 enum BarMode: Int {
-    case tempsOnly = 0     // C 62°  G 71°  S 33°
-    case tempsPlusRAM = 1  // C 62°  G 71°  S 33°  R 45GB
+    case tempsOnly = 0     // CPU 62°  GPU 71°  SSD 33°
+    case tempsPlusRAM = 1  // CPU 62°  GPU 71°  SSD 33°  RAM 45GB
     case compact = 2       // 62° 45GB (temp of hottest component + RAM)
     var title: String {
         switch self {
@@ -490,14 +490,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         switch barMode {
         case .tempsOnly:
-            append("C ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
-            append("  G ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
-            append("  S ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
+            append("CPU ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("  GPU ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
+            append("  SSD ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
         case .tempsPlusRAM:
-            append("C ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
-            append("  G ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
-            append("  S ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
-            append("  R ", .labelColor); append(ramText, .labelColor)
+            append("CPU ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("  GPU ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
+            append("  SSD ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
+            append("  RAM ", .labelColor); append(ramText, .labelColor)
         case .compact:
             let temps = [s.cpuTemp, s.gpuTemp, s.ssdTemp].compactMap { $0 }
             let hottestColor = temps.map { TempLevel.level($0) }.max(by: { $0.rank < $1.rank })?.color ?? NSColor.labelColor
