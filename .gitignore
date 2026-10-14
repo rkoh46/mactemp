@@ -1,5 +1,4 @@
 MacTemp.app
-build.sh
 icon_base.png
 icon_base_1024.png
 MacTemp.iconset
@@ -27,3 +26,8 @@ fullkeys.txt
 stats_ref/
 macmon_ref/
 .DS_Store
+dist/
+screenshot_*.png
+assets/menu_*.png
+tools/click_status
+test_shot.png
