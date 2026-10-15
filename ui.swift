@@ -260,6 +260,8 @@ final class PanelGridView2: NSView {
 
     private struct Panel {
         let title: String
+        let symbol: String
+        let symbolColor: NSColor
         var header: [(String, NSColor)]      // values on the title line
         var sub: [(String, NSColor)] = []    // smaller second line
         let series: [Double]                 // 0...1 of max
@@ -271,15 +273,17 @@ final class PanelGridView2: NSView {
         let ramTotal = max(Double(last.ramTotal ?? 1), 1)
         let swapTotal = max(Double(last.swapTotal ?? 1), 1)
 
-        func tempPanel(_ title: String, _ key: (SystemSample) -> Double?) -> Panel {
+        func tempPanel(_ title: String, _ symbol: String, _ symbolColor: NSColor,
+                       _ key: (SystemSample) -> Double?) -> Panel {
             let vals = history.compactMap(key)
             let cur = key(last) ?? 0
-            return Panel(title: title,
+            return Panel(title: title, symbol: symbol, symbolColor: symbolColor,
                          header: [(key(last).map { unit.format($0) } ?? "--", PanelGridView2.tempColor(cur))],
                          series: vals.map { min(max($0 / 100.0, 0), 1) },
                          barColors: vals.map(PanelGridView2.tempColor))
         }
-        func busyPanel(_ title: String, _ key: (SystemSample) -> Double?,
+        func busyPanel(_ title: String, _ symbol: String, _ symbolColor: NSColor,
+                       _ key: (SystemSample) -> Double?,
                        power: Double?, mhz: Double?) -> Panel {
             let vals = history.compactMap(key)
             let cur = key(last) ?? 0
@@ -288,7 +292,7 @@ final class PanelGridView2: NSView {
             if let p = power { subText += String(format: "%.1fW", p) }
             if let m = mhz { subText += (subText.isEmpty ? "" : " · ") + String(format: "%.0fMHz", m) }
             if !subText.isEmpty { sub = [(subText, .secondaryLabelColor)] }
-            return Panel(title: title,
+            return Panel(title: title, symbol: symbol, symbolColor: symbolColor,
                          header: [("\(Int(cur))%", PanelGridView2.pctColor(cur))],
                          sub: sub,
                          series: vals.map { min(max($0 / 100.0, 0), 1) },
@@ -300,11 +304,11 @@ final class PanelGridView2: NSView {
         let ramSeries = history.compactMap { $0.ramUsed }.map { min(Double($0) / ramTotal, 1) }
 
         // CPU panel: hottest core temp header + busy bars + power/MHz sub
-        var cpuP = busyPanel("CPU", { $0.cpuBusyPct }, power: last.cpuPowerW, mhz: last.cpuMaxMHz)
+        var cpuP = busyPanel("CPU", "cpu", .systemOrange, { $0.cpuBusyPct }, power: last.cpuPowerW, mhz: last.cpuMaxMHz)
         let cpuT = (last.cpuMaxCoreTemp ?? last.cpuTemp) ?? 0
         cpuP.header = [(unit.format(cpuT), PanelGridView2.tempColor(cpuT))] + cpuP.header
         // GPU panel: temp + busy + power/MHz
-        var gpuP = busyPanel("GPU", { $0.gpuBusyPct }, power: last.gpuPowerW, mhz: last.gpuMHz)
+        var gpuP = busyPanel("GPU", "cpu", .systemPurple, { $0.gpuBusyPct }, power: last.gpuPowerW, mhz: last.gpuMHz)
         let gpuT = last.gpuTemp ?? 0
         gpuP.header = [(unit.format(gpuT), PanelGridView2.tempColor(gpuT))] + gpuP.header
 
@@ -315,7 +319,7 @@ final class PanelGridView2: NSView {
         let fanMode = last.fanManual ? "manual" : "auto"
         let fanColor = last.fanManual ? NSColor.systemYellow : NSColor.labelColor
         let fanPanel = Panel(
-            title: "FAN",
+            title: "FAN", symbol: "fan", symbolColor: .secondaryLabelColor,
             header: [("\(Int(fanCur))", fanColor),
                      (fanMode, last.fanManual ? .systemYellow : .secondaryLabelColor)],
             sub: [(last.fanTargetRpm.map { "target \(Int($0)) RPM" } ?? "", .secondaryLabelColor)],
@@ -328,14 +332,14 @@ final class PanelGridView2: NSView {
         let downText = last.netDownBps.map(formatRate) ?? "--"
         let upText = last.netUpBps.map(formatRate) ?? "--"
         let netPanel = Panel(
-            title: "NET",
+            title: "NET", symbol: "network", symbolColor: .systemGreen,
             header: [("↓" + downText, .labelColor)],
             sub: [(upText + " ↑", .secondaryLabelColor)],
             series: netSeries.map { min($0 / netScale, 1) },
             barColors: netSeries.map { _ in NSColor.controlAccentColor })
 
         // SSD panel carries the disk free-space readout
-        var ssdP = tempPanel("SSD", { $0.ssdTemp })
+        var ssdP = tempPanel("SSD", "internaldrive", .systemCyan, { $0.ssdTemp })
         if let free = last.diskFree, let tot = last.diskTotal, tot > 0 {
             let ratio = Double(free) / Double(tot)
             ssdP.sub = [("\(formatBytes(free)) free / \(formatBytes(tot))",
@@ -344,7 +348,7 @@ final class PanelGridView2: NSView {
         let panels = [
             cpuP, gpuP,
             ssdP,
-            Panel(title: "RAM",
+            Panel(title: "RAM", symbol: "memorychip", symbolColor: .systemIndigo,
                   header: [("\(Int(ramPct))%", PanelGridView2.pctColor(ramPct)),
                            ("SW \(Int(swapPct))%", PanelGridView2.pctColor(swapPct))],
                   sub: [((last.swapUsed.map { formatBytes($0) } ?? "--")
@@ -380,6 +384,13 @@ final class PanelGridView2: NSView {
 
             var tx = cell.minX + 8
             let hy = cell.maxY - 18
+            let symCfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [p.symbolColor]))
+            if let img = NSImage(systemSymbolName: p.symbol, accessibilityDescription: p.title)?
+                .withSymbolConfiguration(symCfg) {
+                img.draw(in: NSRect(x: tx, y: hy - 1, width: 14, height: 14))
+                tx += 17
+            }
             let titleAttrs: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: NSColor.labelColor]
             (p.title as NSString).draw(at: CGPoint(x: tx, y: hy), withAttributes: titleAttrs)
             tx += (p.title as NSString).size(withAttributes: titleAttrs).width + 6
