@@ -484,22 +484,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
-        for title in ["CPU:  ", "GPU:  ", "SSD:  ", "RAM:   ", "Swap:  ", "CPU load: ", "Disk:  ", "Fans:  "] {
-            let item = NSMenuItem(title: title + "--", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
+        let panels = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        panels.view = PanelGridView2(history: history, unit: unit,
+                                     frame: NSRect(x: 0, y: 0, width: 360, height: 318))
+        menu.addItem(panels)
 
         let model = NSMenuItem(title: Self.machineModel(), action: nil, keyEquivalent: "")
         model.isEnabled = false
+        model.attributedTitle = NSAttributedString(string: Self.machineModel(),
+            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
         menu.addItem(model)
-
-        menu.addItem(.separator())
-        let panels = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        panels.view = PanelGridView2(history: history, unit: unit,
-                                     frame: NSRect(x: 0, y: 0, width: 286, height: 318))
-        menu.addItem(panels)
 
         menu.addItem(.separator())
         let fansRow = FanControlsRow(minRPM: lastSample?.fanMinRpm ?? 1000,
@@ -585,56 +579,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alertManager.evaluate(cpu: hotCPUDisplay, gpu: s.gpuTemp, ssd: s.ssdTemp, thresholdC: alertTempC)
         }
 
-        // update menu values in place (menu stays open live), colored by level
+        // update the live panel grid in place (menu stays open, graphs refresh)
         if let menu = statusItem.menu {
-            let menuFont = NSFont.systemFont(ofSize: 13)
-            func setRow(_ prefix: String, _ value: String, _ color: NSColor) {
-                if let item = menu.items.first(where: { $0.title.hasPrefix(prefix) || ($0.attributedTitle?.string.hasPrefix(prefix) ?? false) }) {
-                    let a = NSMutableAttributedString()
-                    a.append(NSAttributedString(string: prefix, attributes: [.font: menuFont, .foregroundColor: NSColor.secondaryLabelColor]))
-                    a.append(NSAttributedString(string: value, attributes: [.font: menuFont, .foregroundColor: color]))
-                    item.attributedTitle = a
-                }
-            }
-            var cpuExtra = ""
-            if let mct = s.cpuMaxCoreTemp, let avg = s.cpuTemp, mct > avg + 0.5 { cpuExtra = "  (max \(unit.format(mct)))" }
-            setRow("CPU:  ", f(s.cpuTemp) + cpuExtra, level(hotCPUDisplay).color)
-            var gpuExtra = ""
-            if let b = s.gpuBusyPct { gpuExtra += "  ·  " + String(format: "%.0f%%", b) }
-            if let w = s.gpuPowerW { gpuExtra += "  ·  " + String(format: "%.1fW", w) }
-            if let m = s.gpuMHz { gpuExtra += "  ·  " + String(format: "%.0fMHz", m) }
-            setRow("GPU:  ", f(s.gpuTemp) + gpuExtra, level(s.gpuTemp).color)
-            setRow("SSD:  ", f(s.ssdTemp), level(s.ssdTemp).color)
-            var ramColor = NSColor.labelColor
-            var ramExtra = ""
-            if let p = s.pressure {
-                if p == 2 { ramColor = NSColor.systemYellow; ramExtra = "  (warning)" }
-                if p == 3 { ramColor = NSColor.systemRed;   ramExtra = "  (critical)" }
-            }
-            setRow("RAM:   ", "\(ramText) / \(s.ramTotal.map { formatBytes($0) } ?? "--")\(ramExtra)", ramColor)
-            setRow("Swap:  ", (s.swapUsed.map { formatBytes($0) } ?? "--")
-                + " / " + (s.swapTotal.map { formatBytes($0) } ?? "--"), NSColor.labelColor)
-            let load = s.cpuLoad ?? 0
-            var loadExtra = ""
-            if let b = s.cpuBusyPct { loadExtra += "  ·  " + String(format: "%.0f%% busy", b) }
-            if let w = s.cpuPowerW { loadExtra += "  ·  " + String(format: "%.1fW", w) }
-            if let m = s.cpuMaxMHz { loadExtra += "  ·  " + String(format: "%.0fMHz", m) }
-            setRow("CPU load: ", (s.cpuLoad.map { String(format: "%.0f%%", $0) } ?? "--") + loadExtra,
-                   load >= 85 ? NSColor.systemRed : (load >= 60 ? NSColor.systemYellow : NSColor.labelColor))
-            let diskPct = (s.diskTotal ?? 1) > 0 ? Double(s.diskFree ?? 0) / Double(s.diskTotal!) : 1
-            setRow("Disk:  ", (s.diskFree.map { formatBytes($0) } ?? "--")
-                + " free / " + (s.diskTotal.map { formatBytes($0) } ?? "--"),
-                diskPct < 0.10 ? NSColor.systemRed : (diskPct < 0.20 ? NSColor.systemYellow : NSColor.labelColor))
-            var fanText = "--"
-            if !s.fanRpm.isEmpty {
-                fanText = s.fanRpm.map { String(format: "%.0f", $0) }.joined(separator: " / ")
-                    + " RPM · " + (s.fanManual ? "manual" : "auto")
-            }
-            setRow("Fans:  ", fanText, s.fanManual ? NSColor.systemYellow : NSColor.labelColor)
-
             if history.count > 2, let idx = menu.items.firstIndex(where: { $0.view is PanelGridView2 }) {
                 menu.items[idx].view = PanelGridView2(history: history, unit: unit,
-                                                      frame: NSRect(x: 0, y: 0, width: 286, height: 318))
+                                                      frame: NSRect(x: 0, y: 0, width: 360, height: 318))
             }
             if let row = menu.items.first(where: { $0.view is FanControlsRow })?.view as? FanControlsRow {
                 let mode = FanController.shared.lastAppliedMode
@@ -755,116 +704,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var buf = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &buf, &size, nil, 0)
         return String(cString: buf)
-    }
-}
-
-// MARK: - macmon-style metric panels: one bordered box with its own bar graph per metric
-final class PanelGridView: NSView {
-    private let history: [SystemSample]
-    private let unit: TempUnit
-
-    init(history: [SystemSample], unit: TempUnit, frame: NSRect) {
-        self.history = history
-        self.unit = unit
-        super.init(frame: frame)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var intrinsicContentSize: NSSize { NSSize(width: 286, height: 212) }
-
-    /// Load gradient (macmon-style, but high-contrast macOS system colors).
-    private static func tempColor(_ c: Double) -> NSColor {
-        c >= 80 ? .systemRed : (c >= 60 ? .systemYellow : .systemGreen)
-    }
-    private static func pctColor(_ p: Double) -> NSColor {
-        p >= 85 ? .systemRed : (p >= 60 ? .systemYellow : .systemGreen)
-    }
-
-    private struct Panel {
-        let title: String
-        let header: [(String, NSColor)]   // value fragments drawn after the title
-        let series: [Double]              // values normalized 0...1 of max
-        let barColors: [NSColor]          // per-bar color, same length as series
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard history.count > 1, let last = history.last else { return }
-        let ramTotal = max(Double(last.ramTotal ?? 1), 1)
-        let swapTotal = max(Double(last.swapTotal ?? 1), 1)
-
-        func tempPanel(_ title: String, _ key: (SystemSample) -> Double?) -> Panel {
-            let vals = history.compactMap(key)
-            let cur = key(last) ?? 0
-            return Panel(title: title,
-                         header: [(key(last).map { unit.format($0) } ?? "--", PanelGridView.tempColor(cur))],
-                         series: vals.map { min(max($0 / 100.0, 0), 1) },
-                         barColors: vals.map(PanelGridView.tempColor))
-        }
-        let ramPct = (last.ramUsed).map { Double($0) / ramTotal * 100 } ?? 0
-        let swapPct = (last.swapUsed).map { Double($0) / swapTotal * 100 } ?? 0
-        let ramSeries = history.compactMap { $0.ramUsed }.map { min(Double($0) / ramTotal, 1) }
-        let panels = [
-            tempPanel("CPU", { $0.cpuTemp }),
-            tempPanel("GPU", { $0.gpuTemp }),
-            tempPanel("SSD", { $0.ssdTemp }),
-            Panel(title: "RAM",
-                  header: [("\(Int(ramPct))%", PanelGridView.pctColor(ramPct)),
-                           ("SW \(Int(swapPct))%", PanelGridView.pctColor(swapPct))],
-                  series: ramSeries,
-                  barColors: ramSeries.map { PanelGridView.pctColor($0 * 100) }),
-        ]
-        drawPanels(panels)
-    }
-
-    private func drawPanels(_ panels: [Panel]) {
-        let w = bounds.width, h = bounds.height
-        let outer: CGFloat = 2, gap: CGFloat = 8
-        let cols = 2, rows = 2
-        let pw = (w - outer * 2 - gap * CGFloat(cols - 1)) / CGFloat(cols)
-        let ph = (h - outer * 2 - gap * CGFloat(rows - 1)) / CGFloat(rows)
-
-        let titleFont = NSFont.systemFont(ofSize: 12, weight: .bold)
-        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
-
-        for (i, p) in panels.enumerated() {
-            let col = i % cols, row = i / cols
-            let x = outer + CGFloat(col) * (pw + gap)
-            let y = h - outer - ph * CGFloat(row + 1) - gap * CGFloat(row)
-            let cell = NSRect(x: x, y: y, width: pw, height: ph)
-
-            let border = NSBezierPath(roundedRect: cell.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-            NSColor.secondaryLabelColor.withAlphaComponent(0.55).set()
-            border.lineWidth = 1
-            border.stroke()
-
-            // header: bold title, then colored current values
-            var tx = cell.minX + 8
-            let hy = cell.maxY - 19
-            let titleAttrs: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: NSColor.labelColor]
-            (p.title as NSString).draw(at: CGPoint(x: tx, y: hy), withAttributes: titleAttrs)
-            tx += (p.title as NSString).size(withAttributes: titleAttrs).width + 6
-            for (text, color) in p.header {
-                let attrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: color]
-                (text as NSString).draw(at: CGPoint(x: tx, y: hy), withAttributes: attrs)
-                tx += (text as NSString).size(withAttributes: attrs).width + 8
-            }
-
-            // bars: macmon-style solid columns, newest sample on the right
-            let plot = NSRect(x: cell.minX + 7, y: cell.minY + 7, width: cell.width - 14, height: cell.height - 30)
-            guard !p.series.isEmpty, plot.width > 4 else { continue }
-            let maxBars = max(Int(plot.width / 3), 4)
-            let vals = Array(p.series.suffix(maxBars))
-            let colorOff = p.barColors.count - vals.count
-            let pitch = plot.width / CGFloat(vals.count)
-            let barW = max(pitch - 1, 1)
-            for (j, v) in vals.enumerated() {
-                let bh = plot.height * CGFloat(min(max(v, 0), 1))
-                if bh < 1 { continue }   // zero leaves the column blank, like macmon
-                p.barColors[colorOff + j].setFill()
-                NSBezierPath(rect: NSRect(x: plot.minX + CGFloat(j) * pitch, y: plot.minY,
-                                          width: barW, height: bh)).fill()
-            }
-        }
     }
 }
 

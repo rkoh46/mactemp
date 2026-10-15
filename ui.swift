@@ -11,6 +11,7 @@ final class FanController {
 
     static let shared = FanController()
 
+    private var cachedPath: String?
     var lastAppliedMode: Mode {
         get { Mode(rawValue: UserDefaults.standard.integer(forKey: "fanMode")) ?? .auto }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "fanMode") }
@@ -21,10 +22,21 @@ final class FanController {
     }
 
     private func fanctlPath() -> String? {
-        if let p = Bundle.main.path(forResource: "fanctl", ofType: nil, inDirectory: "MacOS"),
-           FileManager.default.isExecutableFile(atPath: p) { return p }
-        let local = FileManager.default.currentDirectoryPath + "/fanctl"
-        return FileManager.default.isExecutableFile(atPath: local) ? local : nil
+        if let p = cachedPath, FileManager.default.isExecutableFile(atPath: p) { return p }
+        // NB: Bundle.path(forResource:) does NOT index plain binaries in Contents/MacOS —
+        // build the path directly from the executable/bundle location instead.
+        var candidates: [String] = []
+        if let exec = Bundle.main.executablePath {
+            candidates.append((exec as NSString).deletingLastPathComponent + "/fanctl")
+        }
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/fanctl").path)
+        candidates.append("/Applications/MacTemp.app/Contents/MacOS/fanctl")
+        candidates.append(FileManager.default.currentDirectoryPath + "/fanctl")
+        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
+            cachedPath = c
+            return c
+        }
+        return nil
     }
 
     /// Apply a fan mode. Pops the macOS authorization dialog (SMC fan writes need admin).
@@ -91,7 +103,7 @@ final class FanControlsRow: NSView {
     var sliderMax: Double = 2500
 
     init(minRPM: Double, maxRPM: Double, target: Double) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 286, height: 64))
+        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 46))
 
         let autoBtn = NSButton(title: "Auto", target: nil, action: nil)
         let blastBtn = NSButton(title: "Full Blast", target: nil, action: nil)
@@ -99,26 +111,26 @@ final class FanControlsRow: NSView {
         blastBtn.bezelStyle = .rounded
         autoBtn.target = self; autoBtn.action = #selector(autoTapped)
         blastBtn.target = self; blastBtn.action = #selector(blastTapped)
-        autoBtn.frame = NSRect(x: 8, y: 34, width: 64, height: 26)
-        blastBtn.frame = NSRect(x: 78, y: 34, width: 96, height: 26)
+        autoBtn.frame = NSRect(x: 8, y: 20, width: 58, height: 24)
+        blastBtn.frame = NSRect(x: 72, y: 20, width: 90, height: 24)
         addSubview(autoBtn); addSubview(blastBtn)
 
         slider.minValue = minRPM
         slider.maxValue = maxRPM
         slider.doubleValue = min(max(target, minRPM), maxRPM)
         slider.isContinuous = false        // fire only on release: one auth prompt per change
-        slider.frame = NSRect(x: 8, y: 10, width: 190, height: 20)
+        slider.frame = NSRect(x: 8, y: 2, width: 236, height: 18)
         slider.target = self; slider.action = #selector(sliderReleased)
         addSubview(slider)
         sliderMax = maxRPM
 
         targetLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        targetLabel.frame = NSRect(x: 204, y: 10, width: 76, height: 18)
+        targetLabel.frame = NSRect(x: 250, y: 1, width: 102, height: 18)
         addSubview(targetLabel)
 
         statusLabel.font = NSFont.systemFont(ofSize: 10)
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.frame = NSRect(x: 180, y: 38, width: 100, height: 18)
+        statusLabel.frame = NSRect(x: 236, y: 22, width: 116, height: 18)
         statusLabel.alignment = .right
         addSubview(statusLabel)
 
@@ -126,7 +138,7 @@ final class FanControlsRow: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 286, height: 64) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 360, height: 46) }
 
     private func updateTargetLabel() {
         targetLabel.stringValue = "→ \(Int(slider.doubleValue)) RPM"
@@ -162,7 +174,7 @@ final class PanelGridView2: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 286, height: 318) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 360, height: 318) }
 
     static func tempColor(_ c: Double) -> NSColor {
         c >= 80 ? .systemRed : (c >= 60 ? .systemYellow : .systemGreen)
@@ -247,12 +259,21 @@ final class PanelGridView2: NSView {
             series: netSeries.map { min($0 / netScale, 1) },
             barColors: netSeries.map { _ in NSColor.controlAccentColor })
 
+        // SSD panel carries the disk free-space readout
+        var ssdP = tempPanel("SSD", { $0.ssdTemp })
+        if let free = last.diskFree, let tot = last.diskTotal, tot > 0 {
+            let ratio = Double(free) / Double(tot)
+            ssdP.sub = [("\(formatBytes(free)) free / \(formatBytes(tot))",
+                        ratio < 0.10 ? .systemRed : (ratio < 0.20 ? .systemYellow : .secondaryLabelColor))]
+        }
         let panels = [
             cpuP, gpuP,
-            tempPanel("SSD", { $0.ssdTemp }),
+            ssdP,
             Panel(title: "RAM",
                   header: [("\(Int(ramPct))%", PanelGridView2.pctColor(ramPct)),
                            ("SW \(Int(swapPct))%", PanelGridView2.pctColor(swapPct))],
+                  sub: [((last.swapUsed.map { formatBytes($0) } ?? "--")
+                        + " / " + (last.swapTotal.map { formatBytes($0) } ?? "--") + " swap", .secondaryLabelColor)],
                   series: ramSeries,
                   barColors: ramSeries.map { PanelGridView2.pctColor($0 * 100) }),
             fanPanel, netPanel,
