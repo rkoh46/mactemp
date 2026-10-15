@@ -35,7 +35,8 @@ if ok {
     print("helper installed: \(label)")
     exit(0)
 } else {
-    let ns = errorRef?.takeRetainedValue() as NSError?
+    let cfErr = errorRef?.takeRetainedValue()
+    let ns: NSError? = cfErr.map { $0 as! NSError }
     print("SMJobBless failed: \(ns?.localizedDescription ?? "unknown") \(ns?.userInfo ?? [:])")
     exit(1)
 }
