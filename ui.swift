@@ -96,8 +96,7 @@ final class FanController {
         AuthorizationFree(authorization, [])
         if ok { return (true, nil) }
         if let cfErr = errorRef?.takeRetainedValue() {
-            let ns: NSError = cfErr
-            return (false, ns.localizedDescription)
+            return (false, (cfErr as! NSError).localizedDescription)
         }
         return (false, "helper install failed")
     }
