@@ -95,8 +95,10 @@ final class FanController {
         let ok = SMJobBless(kSMDomainSystemLaunchd, Self.helperLabel as CFString, authorization, &errorRef)
         AuthorizationFree(authorization, [])
         if ok { return (true, nil) }
-        let ns = errorRef?.takeRetainedValue() as NSError?
-        return (false, ns?.localizedDescription ?? "helper install failed")
+        if let cfErr = errorRef?.takeRetainedValue() {
+            return (false, (cfErr as NSError).localizedDescription)
+        }
+        return (false, "helper install failed")
     }
 
     /// Apply a fan mode. Preferred: installed root helper (silent). First use blesses it
