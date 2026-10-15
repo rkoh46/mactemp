@@ -10,7 +10,7 @@ A lightweight macOS menu bar monitor for Apple Silicon Macs: live **CPU / GPU / 
 
 - **Temps, RAM, swap, CPU load, disk** in your menu bar, refreshed every 2 s
 - **Color-coded**: temps turn **yellow** ≥ 60 °C and **red** ≥ 80 °C; RAM/CPU/disk rows color on pressure, load, and free-space thresholds
-- **History graphs** in the dropdown menu: 3-minute temperature and memory/swap sparklines
+- **History graphs** in the dropdown menu: four separate panels (CPU / GPU / SSD / RAM) with macmon-style bar graphs, bars colored by load (green / yellow / red)
 - **°C / °F toggle** and 3 menu-bar layouts (temps only / temps + RAM / compact)
 - **No dependencies** — pure Swift + a small C helper, built with `swiftc`, no SPM/Xcode project
 - **No sudo, no helper daemon** — reads SMC + IOHID + Mach VM stats directly
@@ -57,7 +57,7 @@ Requires Xcode Command Line Tools (`swiftc` + `clang`).
 
 ## Architecture
 
-- **main.swift** — SMC client (`IOServiceOpen("AppleSMC")`), Mach/sysctl samplers, `NSStatusItem` UI, colored menu rows, history graphs
+- **main.swift** — SMC client (`IOServiceOpen("AppleSMC")`), Mach/sysctl samplers, `NSStatusItem` UI, colored menu rows, macmon-style per-metric graph panels
 - **hid_temp.c** → `libhidtemp.dylib` — IOHID reader for the NVMe NAND temperature sensor
 - **hidtemp.h** — Swift bridging header for the IOHID library
 - **icon_draw.swift** — generates the app icon programmatically (→ `MacTemp.icns`)

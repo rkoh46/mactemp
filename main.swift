@@ -444,14 +444,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(model)
 
         menu.addItem(.separator())
-        let tempGraph = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        tempGraph.view = SparklineView(kind: .temps, history: history, unit: unit,
-                                       frame: NSRect(x: 0, y: 0, width: 280, height: 76))
-        menu.addItem(tempGraph)
-        let memGraph = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        memGraph.view = SparklineView(kind: .memory, history: history, unit: unit,
-                                      frame: NSRect(x: 0, y: 0, width: 280, height: 76))
-        menu.addItem(memGraph)
+        let panels = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        panels.view = PanelGridView(history: history, unit: unit,
+                                    frame: NSRect(x: 0, y: 0, width: 286, height: 212))
+        menu.addItem(panels)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit MacTemp", action: #selector(quit), keyEquivalent: "q")
@@ -537,15 +533,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setRow("Disk:  ", (s.diskFree.map { formatBytes($0) } ?? "--")
                 + " free / " + (s.diskTotal.map { formatBytes($0) } ?? "--"),
                 diskPct < 0.10 ? NSColor.systemRed : (diskPct < 0.20 ? NSColor.systemYellow : NSColor.labelColor))
-            if history.count > 2 {
-                if let idx = menu.items.firstIndex(where: { ($0.view as? SparklineView)?.kind == .temps }) {
-                    menu.items[idx].view = SparklineView(kind: .temps, history: history, unit: unit,
-                                                         frame: NSRect(x: 0, y: 0, width: 280, height: 76))
-                }
-                if let idx = menu.items.firstIndex(where: { ($0.view as? SparklineView)?.kind == .memory }) {
-                    menu.items[idx].view = SparklineView(kind: .memory, history: history, unit: unit,
-                                                         frame: NSRect(x: 0, y: 0, width: 280, height: 76))
-                }
+            if history.count > 2, let idx = menu.items.firstIndex(where: { $0.view is PanelGridView }) {
+                menu.items[idx].view = PanelGridView(history: history, unit: unit,
+                                                     frame: NSRect(x: 0, y: 0, width: 286, height: 212))
             }
         }
     }
@@ -643,100 +633,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - Graph (temps or memory over time)
-final class SparklineView: NSView {
-    enum Kind { case temps, memory }
-    let kind: Kind
+// MARK: - macmon-style metric panels: one bordered box with its own bar graph per metric
+final class PanelGridView: NSView {
     private let history: [SystemSample]
     private let unit: TempUnit
 
-    init(kind: Kind, history: [SystemSample], unit: TempUnit, frame: NSRect) {
-        self.kind = kind
+    init(history: [SystemSample], unit: TempUnit, frame: NSRect) {
         self.history = history
         self.unit = unit
         super.init(frame: frame)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 280, height: 76) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 286, height: 212) }
+
+    /// Load gradient (macmon-style, but high-contrast macOS system colors).
+    private static func tempColor(_ c: Double) -> NSColor {
+        c >= 80 ? .systemRed : (c >= 60 ? .systemYellow : .systemGreen)
+    }
+    private static func pctColor(_ p: Double) -> NSColor {
+        p >= 85 ? .systemRed : (p >= 60 ? .systemYellow : .systemGreen)
+    }
+
+    private struct Panel {
+        let title: String
+        let header: [(String, NSColor)]   // value fragments drawn after the title
+        let series: [Double]              // values normalized 0...1 of max
+        let barColors: [NSColor]          // per-bar color, same length as series
+    }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard history.count > 1 else { return }
+        guard history.count > 1, let last = history.last else { return }
+        let ramTotal = max(Double(last.ramTotal ?? 1), 1)
+        let swapTotal = max(Double(last.swapTotal ?? 1), 1)
+
+        func tempPanel(_ title: String, _ key: (SystemSample) -> Double?) -> Panel {
+            let vals = history.compactMap(key)
+            let cur = key(last) ?? 0
+            return Panel(title: title,
+                         header: [(key(last).map { unit.format($0) } ?? "--", PanelGridView.tempColor(cur))],
+                         series: vals.map { min(max($0 / 100.0, 0), 1) },
+                         barColors: vals.map(PanelGridView.tempColor))
+        }
+        let ramPct = (last.ramUsed).map { Double($0) / ramTotal * 100 } ?? 0
+        let swapPct = (last.swapUsed).map { Double($0) / swapTotal * 100 } ?? 0
+        let ramSeries = history.compactMap { $0.ramUsed }.map { min(Double($0) / ramTotal, 1) }
+        let panels = [
+            tempPanel("CPU", { $0.cpuTemp }),
+            tempPanel("GPU", { $0.gpuTemp }),
+            tempPanel("SSD", { $0.ssdTemp }),
+            Panel(title: "RAM",
+                  header: [("\(Int(ramPct))%", PanelGridView.pctColor(ramPct)),
+                           ("SW \(Int(swapPct))%", PanelGridView.pctColor(swapPct))],
+                  series: ramSeries,
+                  barColors: ramSeries.map { PanelGridView.pctColor($0 * 100) }),
+        ]
+        drawPanels(panels)
+    }
+
+    private func drawPanels(_ panels: [Panel]) {
         let w = bounds.width, h = bounds.height
-        let plotH = h - 18
+        let outer: CGFloat = 2, gap: CGFloat = 8
+        let cols = 2, rows = 2
+        let pw = (w - outer * 2 - gap * CGFloat(cols - 1)) / CGFloat(cols)
+        let ph = (h - outer * 2 - gap * CGFloat(rows - 1)) / CGFloat(rows)
 
-        // series: values normalized 0-100 where sensible
-        var series: [[Double]] = []
-        var colors: [NSColor] = []
-        var labels: [String] = []
-        switch kind {
-        case .temps:
-            series = [history.map { $0.cpuTemp ?? 0 }, history.map { $0.gpuTemp ?? 0 }, history.map { $0.ssdTemp ?? 0 }]
-            colors = [NSColor.systemRed, NSColor.systemOrange, NSColor.systemGreen]
-            labels = ["CPU", "GPU", "SSD"]
-        case .memory:
-            let total = Double(history.last?.ramTotal ?? 1)
-            series = [history.map { Double($0.ramUsed ?? 0) / total * 100 }].compactMap { $0.isEmpty ? nil : $0 }
-            if let swapTotal = history.last?.swapTotal, swapTotal > 0 {
-                series.append(history.map { Double($0.swapUsed ?? 0) / Double(swapTotal) * 100 })
-                colors = [NSColor.systemBlue, NSColor.systemPurple]
-                labels = ["RAM", "Swap"]
-            } else {
-                colors = [NSColor.systemBlue]
-                labels = ["RAM"]
-            }
-        }
+        let titleFont = NSFont.systemFont(ofSize: 12, weight: .bold)
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
 
-        let all = series.flatMap { $0 }
-        var lo = (all.min() ?? 0) - 4
-        var hi = (all.max() ?? 100) + 4
-        if kind == .memory { lo = 0; hi = 100 }
-        let span = max(hi - lo, 1)
+        for (i, p) in panels.enumerated() {
+            let col = i % cols, row = i / cols
+            let x = outer + CGFloat(col) * (pw + gap)
+            let y = h - outer - ph * CGFloat(row + 1) - gap * CGFloat(row)
+            let cell = NSRect(x: x, y: y, width: pw, height: ph)
 
-        for (i, v) in series.enumerated() {
-            // filled area
-            let area = NSBezierPath()
-            area.move(to: CGPoint(x: 0, y: 0))
-            for (j, val) in v.enumerated() {
-                let x = w * CGFloat(j) / CGFloat(max(v.count - 1, 1))
-                let y = plotH * CGFloat((val - lo) / span)
-                area.line(to: CGPoint(x: x, y: y))
-            }
-            area.line(to: CGPoint(x: w, y: 0))
-            area.close()
-            colors[i].withAlphaComponent(0.15).setFill()
-            area.fill()
-            // line
-            let path = NSBezierPath()
-            for (j, val) in v.enumerated() {
-                let x = w * CGFloat(j) / CGFloat(max(v.count - 1, 1))
-                let y = plotH * CGFloat((val - lo) / span)
-                if j == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.line(to: CGPoint(x: x, y: y)) }
-            }
-            colors[i].set()
-            path.lineWidth = 1.5
-            path.stroke()
-        }
+            let border = NSBezierPath(roundedRect: cell.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+            NSColor.secondaryLabelColor.withAlphaComponent(0.55).set()
+            border.lineWidth = 1
+            border.stroke()
 
-        // legend with latest values
-        let font = NSFont.systemFont(ofSize: 10)
-        var x: CGFloat = 6
-        let last = history.last
-        for (i, label) in labels.enumerated() {
-            let text: String
-            switch (kind, label) {
-            case (.temps, "CPU"): text = "CPU \((last?.cpuTemp).map { unit.format($0) } ?? "--")"
-            case (.temps, "GPU"): text = "GPU \((last?.gpuTemp).map { unit.format($0) } ?? "--")"
-            case (.temps, "SSD"): text = "SSD \((last?.ssdTemp).map { unit.format($0) } ?? "--")"
-            case (.memory, "RAM"): text = "RAM \((last?.ramUsed).map { formatBytes($0) } ?? "--")"
-            case (.memory, "Swap"): text = "Swap \((last?.swapUsed).map { formatBytes($0) } ?? "--")"
-            default: text = label
+            // header: bold title, then colored current values
+            var tx = cell.minX + 8
+            let hy = cell.maxY - 19
+            let titleAttrs: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: NSColor.labelColor]
+            (p.title as NSString).draw(at: CGPoint(x: tx, y: hy), withAttributes: titleAttrs)
+            tx += (p.title as NSString).size(withAttributes: titleAttrs).width + 6
+            for (text, color) in p.header {
+                let attrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: color]
+                (text as NSString).draw(at: CGPoint(x: tx, y: hy), withAttributes: attrs)
+                tx += (text as NSString).size(withAttributes: attrs).width + 8
             }
-            (colors[i] as NSColor).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x, y: 7, width: 7, height: 7)).fill()
-            (text as NSString).draw(at: CGPoint(x: x + 10, y: 2),
-                                    withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
-            x += (text as NSString).size(withAttributes: [.font: font]).width + 24
+
+            // bars: macmon-style solid columns, newest sample on the right
+            let plot = NSRect(x: cell.minX + 7, y: cell.minY + 7, width: cell.width - 14, height: cell.height - 30)
+            guard !p.series.isEmpty, plot.width > 4 else { continue }
+            let maxBars = max(Int(plot.width / 3), 4)
+            let vals = Array(p.series.suffix(maxBars))
+            let colorOff = p.barColors.count - vals.count
+            let pitch = plot.width / CGFloat(vals.count)
+            let barW = max(pitch - 1, 1)
+            for (j, v) in vals.enumerated() {
+                let bh = plot.height * CGFloat(min(max(v, 0), 1))
+                if bh < 1 { continue }   // zero leaves the column blank, like macmon
+                p.barColors[colorOff + j].setFill()
+                NSBezierPath(rect: NSRect(x: plot.minX + CGFloat(j) * pitch, y: plot.minY,
+                                          width: barW, height: bh)).fill()
+            }
         }
     }
 }
