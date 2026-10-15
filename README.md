@@ -47,7 +47,21 @@ MacTemp can override the fan curve: **Full Blast** pins both fans to max RPM, an
 
 ## Install
 
-Download `MacTemp.dmg` from the [latest release](../../releases/latest), open it, and drag MacTemp to Applications. The app is ad-hoc signed (not notarized), so on first launch right-click → Open (or `xattr -d com.apple.quarantine /Applications/MacTemp.app`).
+Homebrew (recommended):
+
+```bash
+brew tap rkoh46/mactemp
+brew install --cask mactemp
+```
+
+Or download `MacTemp.dmg` from the [latest release](../../releases/latest), open it, and drag MacTemp to Applications. The app is ad-hoc signed (not notarized), so on first launch right-click → Open (or `xattr -d com.apple.quarantine /Applications/MacTemp.app`).
+
+To remove the privileged fan helper too (brew uninstall leaves it; it's harmless but persistent):
+
+```bash
+sudo launchctl bootout system/local.mactemp.helper
+sudo rm /Library/PrivilegedHelperTools/local.mactemp.helper /Library/LaunchDaemons/local.mactemp.helper.plist
+```
 
 Or build from source:
 
