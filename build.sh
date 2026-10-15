@@ -18,11 +18,13 @@ build() {
         -framework IOKit -framework CoreFoundation
   install_name_tool -id @rpath/libhidtemp.dylib libhidtemp.dylib
   echo ">> building app binary"
-  swiftc -o "$BUILD/Contents/MacOS/MacTemp" main.swift \
+  swiftc -O -o "$BUILD/Contents/MacOS/MacTemp" main.swift metrics.swift ui.swift \
     -import-objc-header hidtemp.h \
     -I . -L . -lhidtemp \
     -framework AppKit -framework IOKit -framework CoreFoundation \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  echo ">> building fanctl helper (bundled; fan writes need admin)"
+  swiftc -O -o "$BUILD/Contents/MacOS/fanctl" tools/fanctl.swift -framework IOKit
   cp Info.plist "$BUILD/Contents/"
   mkdir -p "$BUILD/Contents/Resources"
   cp MacTemp.icns "$BUILD/Contents/Resources/"

@@ -33,3 +33,6 @@ tools/click_status
 test_shot.png
 win_*.png
 probe_*.png
+fanctl
+bar_button.png
+win_*.png

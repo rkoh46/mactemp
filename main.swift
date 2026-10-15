@@ -1,6 +1,7 @@
 import AppKit
 import IOKit
 import CoreFoundation
+import UserNotifications
 
 // MARK: - SMC (Apple Silicon, in-process, no sudo)
 // Protocol layout from exelban/stats; key classification (Tp/Te/Ts = CPU, Tg = GPU) from vladkens/macmon.
@@ -152,6 +153,15 @@ struct SystemSample {
     var cpuLoad: Double?                                               // 0-100 %
     var diskFree: UInt64?; var diskTotal: UInt64?                      // bytes (root volume)
     var pressure: Int?                                                 // 1 normal, 2 warn, 3 critical
+    // v1.4
+    var cpuMaxCoreTemp: Double?                                        // hottest single CPU core
+    var cpuPowerW: Double?; var gpuPowerW: Double?                     // CLPC aggregate energy
+    var cpuBusyPct: Double?; var cpuMaxMHz: Double?                    // IOReport residency
+    var gpuBusyPct: Double?; var gpuMHz: Double?
+    var netDownBps: Double?; var netUpBps: Double?                     // bytes/s
+    var fanRpm: [Double] = []                                          // F0Ac, F1Ac, ...
+    var fanTargetRpm: Double?; var fanMinRpm: Double = 1000; var fanMaxRpm: Double = 3625
+    var fanManual: Bool = false                                        // F*md != 0
 }
 
 func formatBytes(_ b: UInt64) -> String {
@@ -192,6 +202,8 @@ final class SystemSampler {
     private let hidNameSlot = 64
     private let hidMax = 128
     private var prevTicks: [[UInt32]]? = nil
+    private let ioreport: IOReportMetrics? = IOReportMetrics()
+    private let netSampler = NetworkSampler()
     var smcAvailable = false
 
     init() {
@@ -205,6 +217,14 @@ final class SystemSampler {
             if let v = smc.getValue(k), v > -50, v < 150 { sum += v; n += 1 }
         }
         return n > 0 ? sum / Double(n) : nil
+    }
+
+    private func maximum(_ keys: [String]) -> Double? {
+        var best: Double?
+        for k in keys {
+            if let v = smc.getValue(k), v > -50, v < 150, best == nil || v > best! { best = v }
+        }
+        return best
     }
 
     func sample() -> SystemSample {
@@ -255,6 +275,27 @@ final class SystemSampler {
             s.diskTotal = bsize * UInt64(st.f_blocks)
             s.diskFree  = bsize * UInt64(st.f_bavail)
         }
+
+        // v1.4: hottest core, fans, IOReport power/usage/frequency, network
+        s.cpuMaxCoreTemp = maximum(cpuKeys)
+        if smcAvailable {
+            var fi = 0
+            while fi < 4 {
+                if let rpm = smc.getValue("F\(fi)Ac"), rpm > 0, rpm < 10_000 { s.fanRpm.append(rpm) } else { break }
+                fi += 1
+            }
+            if let mn = smc.getValue("F0Mn"), mn > 0 { s.fanMinRpm = mn }
+            if let mx = smc.getValue("F0Mx"), mx > 0 { s.fanMaxRpm = mx }
+            if let tg = smc.getValue("F0Tg"), tg > 0 { s.fanTargetRpm = tg }
+            if let md = smc.getValue("F0md") ?? smc.getValue("F0Md"), md >= 0.5 { s.fanManual = true }
+        }
+        if let r = ioreport?.sample() {
+            s.cpuPowerW = r.cpuPowerW; s.gpuPowerW = r.gpuPowerW
+            s.cpuBusyPct = r.cpuBusyPct; s.cpuMaxMHz = r.cpuMaxMHz
+            s.gpuBusyPct = r.gpuBusyPct; s.gpuMHz = r.gpuMHz
+        }
+        let net = netSampler.sample()
+        s.netDownBps = net.down; s.netUpBps = net.up
         return s
     }
 
@@ -352,11 +393,13 @@ enum BarMode: Int {
     case tempsOnly = 0     // CPU 62°  GPU 71°  SSD 33°
     case tempsPlusRAM = 1  // CPU 62°  GPU 71°  SSD 33°  RAM 45GB
     case compact = 2       // 62° 45GB (temp of hottest component + RAM)
+    case graph = 3         // sparkline of the selected metric + hottest temp
     var title: String {
         switch self {
         case .tempsOnly: return "Temps only"
         case .tempsPlusRAM: return "Temps + RAM"
         case .compact: return "Compact (hot temp + RAM)"
+        case .graph: return "Graph sparkline"
         }
     }
 }
@@ -370,15 +413,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var demoMode = false
     var demoSeed: [SystemSample]?
     private let historyMax = 90
-    private let refreshSec: TimeInterval = 2.0
-    private var unit: TempUnit {
+    var unit: TempUnit {
         get { TempUnit(rawValue: UserDefaults.standard.integer(forKey: "tempUnit")) ?? .celsius }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "tempUnit") }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "tempUnit")
+            if statusItem != nil { statusItem.menu = buildMenu(); refresh() }
+        }
     }
-    private var barMode: BarMode {
+    var barMode: BarMode {
         get { BarMode(rawValue: UserDefaults.standard.integer(forKey: "barMode")) ?? .tempsPlusRAM }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "barMode") }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "barMode")
+            if statusItem != nil { statusItem.menu = buildMenu(); refresh() }
+        }
     }
+    var graphMetric: GraphMetric {
+        get { GraphMetric(rawValue: UserDefaults.standard.integer(forKey: "graphMetric")) ?? .cpuTemp }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "graphMetric"); refresh() }
+    }
+    var refreshSec: TimeInterval {
+        get { let v = UserDefaults.standard.double(forKey: "refreshSec"); return v > 0 ? v : 2.0 }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "refreshSec")
+            timer?.invalidate()
+            if !demoMode {
+                timer = Timer.scheduledTimer(withTimeInterval: newValue, repeats: true) { [weak self] _ in self?.refresh() }
+                RunLoop.main.add(timer!, forMode: .common)
+            }
+        }
+    }
+    var alertEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "alertEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "alertEnabled") }
+    }
+    var alertTempC: Double {
+        get { let v = UserDefaults.standard.double(forKey: "alertTempC"); return v > 0 ? v : 85 }
+        set { UserDefaults.standard.set(newValue, forKey: "alertTempC") }
+    }
+    var restoreFansOnQuit: Bool {
+        get { UserDefaults.standard.object(forKey: "restoreFansOnQuit") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "restoreFansOnQuit") }
+    }
+    var lastSample: SystemSample?
+    private let alertManager = AlertManager()
+    private var settingsWC: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -387,6 +465,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         }
         statusItem.menu = buildMenu()
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
         if let seed = demoSeed { seedDemoHistory(seed) } else { refresh() }
         if !demoMode {
             timer = Timer.scheduledTimer(withTimeInterval: refreshSec, repeats: true) { [weak self] _ in self?.refresh() }
@@ -397,43 +478,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+
         let header = NSMenuItem(title: "MacTemp", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
-        let unitHeader = NSMenuItem(title: "Unit", action: nil, keyEquivalent: "")
-        unitHeader.isEnabled = false
-        menu.addItem(unitHeader)
-        for u in [TempUnit.celsius, .fahrenheit] {
-            let item = NSMenuItem(title: u == .celsius ? "Celsius (°C)" : "Fahrenheit (°F)",
-                                  action: #selector(setUnit(_:)), keyEquivalent: "")
-            item.tag = u.rawValue
-            item.target = self
-            item.state = (unit == u) ? .on : .off
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-
-        let barHeader = NSMenuItem(title: "Menu bar", action: nil, keyEquivalent: "")
-        barHeader.isEnabled = false
-        menu.addItem(barHeader)
-        for m in [BarMode.tempsOnly, .tempsPlusRAM, .compact] {
-            let item = NSMenuItem(title: m.title, action: #selector(setBarMode(_:)), keyEquivalent: "")
-            item.tag = m.rawValue
-            item.target = self
-            item.state = (barMode == m) ? .on : .off
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-
-        for title in ["CPU:  --", "GPU:  --", "SSD:  --"] {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        }
-        for title in ["RAM:   --", "Swap:  --", "CPU load: --", "Disk:  --"] {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        for title in ["CPU:  ", "GPU:  ", "SSD:  ", "RAM:   ", "Swap:  ", "CPU load: ", "Disk:  ", "Fans:  "] {
+            let item = NSMenuItem(title: title + "--", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }
@@ -445,9 +497,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         let panels = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        panels.view = PanelGridView(history: history, unit: unit,
-                                    frame: NSRect(x: 0, y: 0, width: 286, height: 212))
+        panels.view = PanelGridView2(history: history, unit: unit,
+                                     frame: NSRect(x: 0, y: 0, width: 286, height: 318))
         menu.addItem(panels)
+
+        menu.addItem(.separator())
+        let fansRow = FanControlsRow(minRPM: lastSample?.fanMinRpm ?? 1000,
+                                     maxRPM: lastSample?.fanMaxRpm ?? 3625,
+                                     target: FanController.shared.customRPM)
+        fansRow.onApply = { [weak self] mode, rpm in self?.applyFan(mode, rpm: rpm) }
+        let fanItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        fanItem.view = fansRow
+        menu.addItem(fanItem)
+
+        menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit MacTemp", action: #selector(quit), keyEquivalent: "q")
@@ -471,37 +537,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             history.append(s)
             if history.count > historyMax { history.removeFirst() }
         }
+        lastSample = s
 
         func f(_ v: Double?) -> String { v.map { unit.format($0) } ?? "--" }
         func level(_ v: Double?) -> TempLevel { v.map { TempLevel.level($0) } ?? .normal }
         let ramText = (s.ramUsed.map { formatBytes($0) }) ?? "--"
 
         // Menu bar text, colored per temperature level (yellow = warning, red = hot).
-        // Full-strength labelColor everywhere: secondaryLabelColor is unreadable over
-        // a translucent bar on a busy wallpaper.
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         let attr = NSMutableAttributedString()
         func append(_ text: String, _ color: NSColor) {
             attr.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
         }
+        let hotCPUDisplay = maxOptional(s.cpuMaxCoreTemp, s.cpuTemp)
         switch barMode {
         case .tempsOnly:
-            append("CPU ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("CPU ", .labelColor); append(f(hotCPUDisplay), level(hotCPUDisplay).color)
             append("  GPU ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
             append("  SSD ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
         case .tempsPlusRAM:
-            append("CPU ", .labelColor); append(f(s.cpuTemp), level(s.cpuTemp).color)
+            append("CPU ", .labelColor); append(f(hotCPUDisplay), level(hotCPUDisplay).color)
             append("  GPU ", .labelColor); append(f(s.gpuTemp), level(s.gpuTemp).color)
             append("  SSD ", .labelColor); append(f(s.ssdTemp), level(s.ssdTemp).color)
             append("  RAM ", .labelColor); append(ramText, .labelColor)
         case .compact:
-            let temps = [s.cpuTemp, s.gpuTemp, s.ssdTemp].compactMap { $0 }
+            let temps = [hotCPUDisplay, s.gpuTemp, s.ssdTemp].compactMap { $0 }
             let hottestColor = temps.map { TempLevel.level($0) }.max(by: { $0.rank < $1.rank })?.color ?? NSColor.labelColor
             let hottest = temps.max().map { unit.format($0) } ?? "--"
             append(hottest, hottestColor)
             append("  \(ramText)", .labelColor)
+        case .graph:
+            let temps = [hotCPUDisplay, s.gpuTemp, s.ssdTemp].compactMap { $0 }
+            let hottestColor = temps.map { TempLevel.level($0) }.max(by: { $0.rank < $1.rank })?.color ?? NSColor.labelColor
+            let hottest = temps.max().map { unit.format($0) } ?? "--"
+            append(hottest, hottestColor)
+        }
+        if barMode == .graph {
+            statusItem.button?.image = barGraphImage(samples: Array(history.suffix(24)), metric: graphMetric)
+            statusItem.button?.imagePosition = .imageLeft
+        } else {
+            statusItem.button?.image = nil
         }
         statusItem.button?.attributedTitle = attr
+
+        // Threshold alerts (once per crossing, 5-minute cooldown per source)
+        if !demoMode, alertEnabled {
+            alertManager.evaluate(cpu: hotCPUDisplay, gpu: s.gpuTemp, ssd: s.ssdTemp, thresholdC: alertTempC)
+        }
 
         // update menu values in place (menu stays open live), colored by level
         if let menu = statusItem.menu {
@@ -514,8 +596,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     item.attributedTitle = a
                 }
             }
-            setRow("CPU:  ", f(s.cpuTemp), level(s.cpuTemp).color)
-            setRow("GPU:  ", f(s.gpuTemp), level(s.gpuTemp).color)
+            var cpuExtra = ""
+            if let mct = s.cpuMaxCoreTemp, let avg = s.cpuTemp, mct > avg + 0.5 { cpuExtra = "  (max \(unit.format(mct)))" }
+            setRow("CPU:  ", f(s.cpuTemp) + cpuExtra, level(hotCPUDisplay).color)
+            var gpuExtra = ""
+            if let b = s.gpuBusyPct { gpuExtra += "  ·  " + String(format: "%.0f%%", b) }
+            if let w = s.gpuPowerW { gpuExtra += "  ·  " + String(format: "%.1fW", w) }
+            if let m = s.gpuMHz { gpuExtra += "  ·  " + String(format: "%.0fMHz", m) }
+            setRow("GPU:  ", f(s.gpuTemp) + gpuExtra, level(s.gpuTemp).color)
             setRow("SSD:  ", f(s.ssdTemp), level(s.ssdTemp).color)
             var ramColor = NSColor.labelColor
             var ramExtra = ""
@@ -527,34 +615,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setRow("Swap:  ", (s.swapUsed.map { formatBytes($0) } ?? "--")
                 + " / " + (s.swapTotal.map { formatBytes($0) } ?? "--"), NSColor.labelColor)
             let load = s.cpuLoad ?? 0
-            setRow("CPU load: ", (s.cpuLoad.map { String(format: "%.0f%%", $0) } ?? "--"),
+            var loadExtra = ""
+            if let b = s.cpuBusyPct { loadExtra += "  ·  " + String(format: "%.0f%% busy", b) }
+            if let w = s.cpuPowerW { loadExtra += "  ·  " + String(format: "%.1fW", w) }
+            if let m = s.cpuMaxMHz { loadExtra += "  ·  " + String(format: "%.0fMHz", m) }
+            setRow("CPU load: ", (s.cpuLoad.map { String(format: "%.0f%%", $0) } ?? "--") + loadExtra,
                    load >= 85 ? NSColor.systemRed : (load >= 60 ? NSColor.systemYellow : NSColor.labelColor))
             let diskPct = (s.diskTotal ?? 1) > 0 ? Double(s.diskFree ?? 0) / Double(s.diskTotal!) : 1
             setRow("Disk:  ", (s.diskFree.map { formatBytes($0) } ?? "--")
                 + " free / " + (s.diskTotal.map { formatBytes($0) } ?? "--"),
                 diskPct < 0.10 ? NSColor.systemRed : (diskPct < 0.20 ? NSColor.systemYellow : NSColor.labelColor))
-            if history.count > 2, let idx = menu.items.firstIndex(where: { $0.view is PanelGridView }) {
-                menu.items[idx].view = PanelGridView(history: history, unit: unit,
-                                                     frame: NSRect(x: 0, y: 0, width: 286, height: 212))
+            var fanText = "--"
+            if !s.fanRpm.isEmpty {
+                fanText = s.fanRpm.map { String(format: "%.0f", $0) }.joined(separator: " / ")
+                    + " RPM · " + (s.fanManual ? "manual" : "auto")
+            }
+            setRow("Fans:  ", fanText, s.fanManual ? NSColor.systemYellow : NSColor.labelColor)
+
+            if history.count > 2, let idx = menu.items.firstIndex(where: { $0.view is PanelGridView2 }) {
+                menu.items[idx].view = PanelGridView2(history: history, unit: unit,
+                                                      frame: NSRect(x: 0, y: 0, width: 286, height: 318))
+            }
+            if let row = menu.items.first(where: { $0.view is FanControlsRow })?.view as? FanControlsRow {
+                let mode = FanController.shared.lastAppliedMode
+                if s.fanManual {
+                    row.setStatus("manual " + (s.fanTargetRpm.map { "\(Int($0))" } ?? ""))
+                } else if mode == .blast { row.setStatus("blast armed") } else { row.setStatus("auto") }
+                row.sliderRange(minRPM: s.fanMinRpm, maxRPM: s.fanMaxRpm)
             }
         }
     }
 
-    @objc private func setUnit(_ sender: NSMenuItem) {
-        guard let u = TempUnit(rawValue: sender.tag), u != unit else { return }
-        unit = u
-        statusItem.menu = buildMenu()   // updates checkmarks
-        refresh()
+    private func maxOptional(_ a: Double?, _ b: Double?) -> Double? {
+        if let a, let b { return max(a, b) }
+        return a ?? b
     }
 
-    @objc private func setBarMode(_ sender: NSMenuItem) {
-        guard let m = BarMode(rawValue: sender.tag), m != barMode else { return }
-        barMode = m
-        statusItem.menu = buildMenu()
-        refresh()
+    @objc func openSettings() {
+        if settingsWC == nil { settingsWC = SettingsWindowController(app: self) }
+        settingsWC?.show()
+    }
+
+    private func applyFan(_ mode: FanController.Mode, rpm: Double?) {
+        FanController.shared.lastAppliedMode = mode
+        if mode == .custom, let rpm { FanController.shared.customRPM = rpm }
+        FanController.shared.apply(mode, rpm: rpm) { [weak self] ok, err in
+            guard let self else { return }
+            if !ok, let err, err != "authorization cancelled" {
+                let a = NSAlert()
+                a.messageText = "Fan control"
+                a.informativeText = err
+                a.alertStyle = .warning
+                a.runModal()
+            }
+            self.refresh()
+        }
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Safety net: never leave fans pinned manual unless the user opted out.
+        if restoreFansOnQuit, lastSample?.fanManual == true {
+            FanController.shared.applyAutoBlocking()
+        }
+    }
 
     /// Open the status menu on screen (for screenshots / QA).
     /// Blocks in modal menu tracking; the capture timer fires in event-tracking mode.
@@ -751,11 +876,16 @@ if ProcessInfo.processInfo.environment["MAC_TEMP_DUMP"] != nil {
     for i in 0..<3 {
         let x = s.sample()
         func f(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "--" }
+        let fansText = x.fanRpm.map { String(format: "%.0f", $0) }.joined(separator: "/")
         print("sample\(i): CPU=\(f(x.cpuTemp)) GPU=\(f(x.gpuTemp)) SSD=\(f(x.ssdTemp)) "
             + "RAM=\(x.ramUsed.map { formatBytes($0) } ?? "--")/\(x.ramTotal.map { formatBytes($0) } ?? "--") "
             + "Swap=\(x.swapUsed.map { formatBytes($0) } ?? "--") Pressure=\(x.pressure.map(String.init) ?? "--") "
             + "CPULoad=\(x.cpuLoad.map { String(format: "%.1f%%", $0) } ?? "--") "
-            + "Disk=\(x.diskFree.map { formatBytes($0) } ?? "--") free")
+            + "Disk=\(x.diskFree.map { formatBytes($0) } ?? "--") free "
+            + "MaxCore=\(f(x.cpuMaxCoreTemp)) CPUpct=\(f(x.cpuBusyPct)) CPUW=\(f(x.cpuPowerW)) CPUMHz=\(f(x.cpuMaxMHz)) "
+            + "GPUpct=\(f(x.gpuBusyPct)) GPUW=\(f(x.gpuPowerW)) GPUMHz=\(f(x.gpuMHz)) "
+            + "NET=\(Int(x.netDownBps ?? 0))/\(Int(x.netUpBps ?? 0))Bps "
+            + "Fans=\(fansText) min=\(Int(x.fanMinRpm)) max=\(Int(x.fanMaxRpm)) manual=\(x.fanManual)")
         usleep(1_000_000)
     }
     exit(0)
@@ -778,7 +908,14 @@ private func demoHistory(count: Int) -> [SystemSample] {
             cpuLoad: 45 + 35 * sin(t / 7 + 0.5),
             diskFree: 696 * 1_073_741_824,
             diskTotal: 994 * 1_073_741_824,
-            pressure: 1))
+            pressure: 1,
+            cpuMaxCoreTemp: 78 + 12 * sin(t / 9),
+            cpuPowerW: 8 + 5 * sin(t / 7), gpuPowerW: 5 + 2 * sin(t / 11),
+            cpuBusyPct: 45 + 30 * sin(t / 7 + 0.5), cpuMaxMHz: 2400 + 900 * sin(t / 5),
+            gpuBusyPct: 40 + 20 * sin(t / 9), gpuMHz: 520 + 260 * sin(t / 9),
+            netDownBps: 2_500_000 + 1_500_000 * sin(t / 6), netUpBps: 350_000 + 250_000 * sin(t / 4),
+            fanRpm: [1500 + 350 * sin(t / 8), 1480 + 350 * sin(t / 8)],
+            fanMinRpm: 1000, fanMaxRpm: 3625, fanManual: false))
     }
     return h
 }
@@ -792,6 +929,9 @@ if ProcessInfo.processInfo.environment["MAC_TEMP_SELFTEST"] != nil {
     let delegate = AppDelegate()
     app.delegate = delegate
     if demo { delegate.demoSeed = demoHistory(count: 40) }
+    if ProcessInfo.processInfo.environment["MAC_TEMP_SETTINGS"] != nil {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { delegate.openSettings() }
+    }
     DispatchQueue.main.asyncAfter(deadline: .now() + (demo ? 0.5 : 4)) {
         delegate.openMenuForScreenshot()
         exit(0)
