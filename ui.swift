@@ -2,9 +2,18 @@
 // threshold alerts, login item, settings window.
 import AppKit
 import ServiceManagement
+import Security
 import UserNotifications
 
 // MARK: - Fan control (SMC writes need root → osascript admin + bundled fanctl helper)
+
+// Shared XPC shape with the privileged fan helper (see tools/fanhelper.swift).
+@objc(MacTempFanHelperProtocol)
+public protocol MacTempFanHelperProtocol {
+    func applyMode(_ mode: String, rpm: Double, withReply reply: @escaping (Bool, String) -> Void)
+    func restoreAuto(withReply reply: @escaping (Bool) -> Void)
+    func helperVersion(withReply reply: @escaping (String) -> Void)
+}
 
 final class FanController {
     enum Mode: Int { case auto = 0, blast = 1, custom = 2 }
@@ -39,15 +48,89 @@ final class FanController {
         return nil
     }
 
-    /// Apply a fan mode. Pops the macOS authorization dialog (SMC fan writes need admin).
-    func apply(_ mode: Mode, rpm: Double? = nil, completion: @escaping (Bool, String?) -> Void) {
-        guard let tool = fanctlPath() else { completion(false, "fanctl helper not found"); return }
-        let arg: String
-        switch mode {
-        case .auto:  arg = "auto"
-        case .blast: arg = "blast"
-        case .custom: arg = "set \(Int(rpm ?? customRPM))"
+    // MARK: privileged helper path (SMJobBless: one admin approval, then silent forever)
+    static let helperLabel = "local.mactemp.helper"
+
+    /// One-shot XPC call to the installed root helper. nil = helper not reachable (not installed yet).
+    private func callHelper(_ mode: String, rpm: Double, timeout: TimeInterval = 5) -> (Bool, String?)? {
+        let conn = NSXPCConnection(machServiceName: Self.helperLabel, options: [])
+        conn.remoteObjectInterface = NSXPCInterface(with: MacTempFanHelperProtocol.self)
+        let sem = DispatchSemaphore(value: 0)
+        var result: (Bool, String?)?
+        let proxy = conn.remoteObjectProxyWithErrorHandler { err in
+            result = (false, err.localizedDescription)
+            sem.signal()
+        } as? MacTempFanHelperProtocol
+        guard let proxy else { conn.invalidate(); return nil }
+        conn.resume()
+        if mode == "auto" {
+            proxy.restoreAuto { ok in result = (ok, ok ? nil : "helper write failed"); sem.signal() }
+        } else {
+            proxy.applyMode(mode, rpm: rpm) { ok, msg in result = (ok, ok ? nil : msg); sem.signal() }
         }
+        if sem.wait(timeout: .now() + timeout) == .timedOut { conn.invalidate(); return (false, "helper timeout") }
+        conn.invalidate()
+        return result
+    }
+
+    /// Install the privileged helper via SMJobBless (admin password prompt, once per machine).
+    private func blessHelper() -> (Bool, String?) {
+        var auth: AuthorizationRef?
+        guard AuthorizationCreate(nil, nil, [], &auth) == errAuthorizationSuccess, let authorization = auth else {
+            return (false, "authorization setup failed")
+        }
+        var item = AuthorizationItem(name: kSMRightBlessPrivilegedHelper, valueLength: 0, value: nil, flags: 0)
+        var itemSet = AuthorizationItemSet(count: 1, items: nil)
+        let copyStatus = withUnsafeMutablePointer(to: &item) { itemPtr in
+            itemSet.items = itemPtr
+            return withUnsafePointer(to: &itemSet) { setPtr in
+                AuthorizationCopyRights(authorization, setPtr, nil, [.interactionAllowed, .extendRights], nil)
+            }
+        }
+        if copyStatus != errAuthorizationSuccess {
+            AuthorizationFree(authorization, [])
+            return (false, copyStatus == errAuthorizationCanceled ? "authorization cancelled" : "authorization failed (\(copyStatus))")
+        }
+        var errorRef: Unmanaged<CFError>?
+        let ok = SMJobBless(kSMDomainSystemLaunchd, Self.helperLabel as CFString, authorization, &errorRef)
+        AuthorizationFree(authorization, [])
+        if ok { return (true, nil) }
+        let ns = errorRef?.takeRetainedValue() as NSError?
+        return (false, ns?.localizedDescription ?? "helper install failed")
+    }
+
+    /// Apply a fan mode. Preferred: installed root helper (silent). First use blesses it
+    /// with a single admin approval; osascript elevation remains only as a fallback.
+    func apply(_ mode: Mode, rpm: Double? = nil, completion: @escaping (Bool, String?) -> Void) {
+        let modeStr: String
+        let targetRPM: Double
+        switch mode {
+        case .auto:   modeStr = "auto";  targetRPM = 0
+        case .blast:  modeStr = "blast"; targetRPM = 0
+        case .custom: modeStr = "set";   targetRPM = rpm ?? customRPM
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let r = self.callHelper(modeStr, rpm: targetRPM) {
+                DispatchQueue.main.async { completion(r.0, r.1) }
+                return
+            }
+            let (blessed, blessErr) = self.blessHelper()
+            if blessed, let r = self.callHelper(modeStr, rpm: targetRPM) {
+                DispatchQueue.main.async { completion(r.0, r.1) }
+                return
+            }
+            self.applyViaOSAScript(modeStr, rpm: targetRPM) { ok, err in
+                var finalErr = err ?? blessErr
+                if !ok && blessed && finalErr == nil { finalErr = "helper installed but fan write failed" }
+                DispatchQueue.main.async { completion(ok, finalErr) }
+            }
+        }
+    }
+
+    /// Legacy fallback: per-change osascript admin elevation.
+    private func applyViaOSAScript(_ modeStr: String, rpm: Double, completion: @escaping (Bool, String?) -> Void) {
+        guard let tool = fanctlPath() else { completion(false, "fanctl helper not found"); return }
+        let arg = modeStr == "set" ? "set \(Int(rpm))" : modeStr
         let shell = "'\(tool)' \(arg)"
         let esc = shell.replacingOccurrences(of: "\\", with: "\\\\")
                        .replacingOccurrences(of: "\"", with: "\\\"")
@@ -57,35 +140,27 @@ final class FanController {
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                DispatchQueue.main.async { completion(false, error.localizedDescription) }
-                return
-            }
-            let err = String(data: errPipe.fileDataToEnd(), encoding: .utf8) ?? ""
-            DispatchQueue.main.async {
-                if process.terminationStatus == 0 {
-                    completion(true, nil)
-                } else if err.contains("-128") {   // AppleScript errUserCanceled
-                    completion(false, "authorization cancelled")
-                } else {
-                    completion(false, err.trimmingCharacters(in: .whitespacesAndNewlines))
-                }
-            }
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            completion(false, error.localizedDescription)
+            return
+        }
+        let errText = String(data: errPipe.fileDataToEnd(), encoding: .utf8) ?? ""
+        if process.terminationStatus == 0 {
+            completion(true, nil)
+        } else if errText.contains("-128") {   // AppleScript errUserCanceled
+            completion(false, "authorization cancelled")
+        } else {
+            completion(false, errText.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
-    /// Synchronous restore used on app quit (blocks while the auth dialog is answered).
+    /// Synchronous restore used on app quit (helper path: no dialogs).
     func applyAutoBlocking() {
-        guard let tool = fanctlPath() else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "do shell script \"'\(tool)' auto\" with administrator privileges"]
-        try? process.run()
-        process.waitUntilExit()
+        if callHelper("auto", rpm: 0, timeout: 3)?.0 == true { return }
+        applyViaOSAScript("auto", rpm: 0) { _, _ in }
     }
 }
 

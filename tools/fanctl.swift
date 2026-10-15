@@ -106,29 +106,29 @@ case "blast":
     let pct = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 1.0) : 1.0
     for id in 0..<numFans {
         let mk = modeKey(id)
-        var ok = false
-        for _ in 0..<10 { if smc.write(mk, bytes: [1,0,0,0]) { ok = true; break }; usleep(50_000) }
-        print("fan\(id) mode->manual: \(ok ? "OK" : "FAIL")")
         if let mx = smc.flt("F\(id)Mx") {
             var ok2 = false
             for _ in 0..<10 { if smc.write("F\(id)Tg", bytes: fltBytes(mx * pct)) { ok2 = true; break }; usleep(50_000) }
             print("fan\(id) target->\(Int(mx * pct)): \(ok2 ? "OK" : "FAIL")")
         }
+        var ok = false
+        for _ in 0..<10 { if smc.write(mk, bytes: [1,0,0,0]) { ok = true; break }; usleep(50_000) }
+        print("fan\(id) mode->manual: \(ok ? "OK" : "FAIL")")
     }
 case "set":
     let rpm = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
     guard rpm > 0 else { print("set requires <rpm>"); exit(1) }
     for id in 0..<numFans {
         let mk = modeKey(id)
-        var ok = false
-        for _ in 0..<10 { if smc.write(mk, bytes: [1,0,0,0]) { ok = true; break }; usleep(50_000) }
-        print("fan\(id) mode->manual: \(ok ? "OK" : "FAIL")")
         if let mn = smc.flt("F\(id)Mn"), let mx = smc.flt("F\(id)Mx") {
             let clamped = min(max(rpm, mn), mx)
             var ok2 = false
             for _ in 0..<10 { if smc.write("F\(id)Tg", bytes: fltBytes(clamped)) { ok2 = true; break }; usleep(50_000) }
             print("fan\(id) target->\(Int(clamped)): \(ok2 ? "OK" : "FAIL")")
         }
+        var ok = false
+        for _ in 0..<10 { if smc.write(mk, bytes: [1,0,0,0]) { ok = true; break }; usleep(50_000) }
+        print("fan\(id) mode->manual: \(ok ? "OK" : "FAIL")")
     }
 case "auto":
     for id in 0..<numFans {

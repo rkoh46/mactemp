@@ -730,6 +730,48 @@ if ProcessInfo.processInfo.environment["MAC_TEMP_DUMP"] != nil {
     exit(0)
 }
 
+// --helper-test [mode]: connect to the privileged helper over XPC and report to /tmp/mactemp_helper_test.txt.
+if CommandLine.arguments.contains("--helper-test") {
+    let mode = CommandLine.arguments.dropFirst().first(where: { $0.hasPrefix("mode:") }).map { String($0.dropFirst(5)) } ?? "version"
+    let conn = NSXPCConnection(machServiceName: "local.mactemp.helper", options: [])
+    conn.remoteObjectInterface = NSXPCInterface(with: MacTempFanHelperProtocol.self)
+    let sem = DispatchSemaphore(value: 0)
+    var lines: [String] = []
+    let proxy = conn.remoteObjectProxyWithErrorHandler { err in
+        lines.append("XPC error: \(err.localizedDescription)")
+        sem.signal()
+    } as? MacTempFanHelperProtocol
+    if let proxy {
+        proxy.helperVersion { v in lines.append("version=\(v)") }
+        switch mode {
+        case "version":
+            sem.signal()
+        case "auto":
+            proxy.restoreAuto { ok in lines.append("auto ok=\(ok)"); sem.signal() }
+        case "blast":
+            proxy.applyMode("blast", rpm: 0) { ok, msg in lines.append("blast ok=\(ok) msg=\(msg)"); sem.signal() }
+        default:
+            proxy.applyMode("set", rpm: 2000) { ok, msg in lines.append("set2000 ok=\(ok) msg=\(msg)"); sem.signal() }
+        }
+    } else {
+        lines.append("proxy cast failed")
+        sem.signal()
+    }
+    conn.resume()
+    if sem.wait(timeout: .now() + 12) == .timedOut { lines.append("TIMEOUT") }
+    usleep(300_000)   // let the version reply land before writing
+    // Don't leave fans pinned manual after a test run.
+    if mode != "version", let p = proxy {
+        let sem2 = DispatchSemaphore(value: 0)
+        p.restoreAuto { ok in lines.append("auto-restore ok=\(ok)"); sem2.signal() }
+        if sem2.wait(timeout: .now() + 12) == .timedOut { lines.append("auto-restore TIMEOUT") }
+    }
+    conn.invalidate()
+    lines.append("done")
+    try? lines.joined(separator: "\n").write(toFile: "/tmp/mactemp_helper_test.txt", atomically: true, encoding: .utf8)
+    exit(0)
+}
+
 // Demo mode: fabricate a plausible history (used for README artwork).
 private func demoHistory(count: Int) -> [SystemSample] {
     var h: [SystemSample] = []
