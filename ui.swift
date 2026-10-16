@@ -57,8 +57,11 @@ final class FanController {
         conn.remoteObjectInterface = NSXPCInterface(with: MacTempFanHelperProtocol.self)
         let sem = DispatchSemaphore(value: 0)
         var result: (Bool, String?)?
-        let proxy = conn.remoteObjectProxyWithErrorHandler { err in
-            result = (false, err.localizedDescription)
+        let proxy = conn.remoteObjectProxyWithErrorHandler { _ in
+            // Connection-level failure (helper not installed / launchd has no such
+            // service): treat as "not reachable" so apply() can bless it. Returning
+            // an error tuple here would surface the XPC message as a popup instead.
+            result = nil
             sem.signal()
         } as? MacTempFanHelperProtocol
         guard let proxy else { conn.invalidate(); return nil }
@@ -68,7 +71,7 @@ final class FanController {
         } else {
             proxy.applyMode(mode, rpm: rpm) { ok, msg in result = (ok, ok ? nil : msg); sem.signal() }
         }
-        if sem.wait(timeout: .now() + timeout) == .timedOut { conn.invalidate(); return (false, "helper timeout") }
+        if sem.wait(timeout: .now() + timeout) == .timedOut { conn.invalidate(); return nil }
         conn.invalidate()
         return result
     }
@@ -116,10 +119,17 @@ final class FanController {
                 DispatchQueue.main.async { completion(r.0, r.1) }
                 return
             }
+            // Helper not installed: bless it once (single admin password prompt),
+            // then retry the XPC call — launchd may take a moment to start the job.
             let (blessed, blessErr) = self.blessHelper()
-            if blessed, let r = self.callHelper(modeStr, rpm: targetRPM) {
-                DispatchQueue.main.async { completion(r.0, r.1) }
-                return
+            if blessed {
+                for _ in 0..<6 {
+                    if let r = self.callHelper(modeStr, rpm: targetRPM, timeout: 3) {
+                        DispatchQueue.main.async { completion(r.0, r.1) }
+                        return
+                    }
+                    usleep(500_000)
+                }
             }
             self.applyViaOSAScript(modeStr, rpm: targetRPM) { ok, err in
                 var finalErr = err ?? blessErr

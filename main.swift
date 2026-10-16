@@ -772,6 +772,42 @@ if CommandLine.arguments.contains("--helper-test") {
     exit(0)
 }
 
+// --fan-test mode:<auto|set|blast>: run the production fan-application path end to end.
+// On a machine with no helper installed yet, expect exactly ONE admin authorization
+// dialog (SMJobBless); every later fan change is then silent. Restores auto afterwards.
+if CommandLine.arguments.contains("--fan-test") {
+    let mode = CommandLine.arguments.dropFirst().first(where: { $0.hasPrefix("mode:") }).map { String($0.dropFirst(5)) } ?? "set"
+    let m: FanController.Mode = mode == "auto" ? .auto : (mode == "blast" ? .blast : .custom)
+    // apply() delivers its completion on the main queue, so we must keep pumping
+    // the main run loop while waiting — blocking here on a semaphore deadlocks.
+    var out = "TIMEOUT"
+    var done = false
+    FanController.shared.apply(m, rpm: mode == "blast" ? nil : 2000) { ok, err in
+        out = "ok=\(ok) err=\(err ?? "nil")"
+        done = true
+    }
+    let deadline = Date().addingTimeInterval(180)
+    while !done && Date() < deadline {
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.25))
+    }
+    print("fan-test \(mode): \(out)")
+    if !done { exit(1) }
+    if m != .auto {
+        out = "auto-restore TIMEOUT"; done = false
+        FanController.shared.apply(.auto, rpm: nil) { ok, err in
+            out = "auto-restore ok=\(ok) err=\(err ?? "nil")"
+            done = true
+        }
+        let d2 = Date().addingTimeInterval(60)
+        while !done && Date() < d2 {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.25))
+        }
+        print("fan-test restore: \(out)")
+        if !done { exit(1) }
+    }
+    exit(0)
+}
+
 // Demo mode: fabricate a plausible history (used for README artwork).
 private func demoHistory(count: Int) -> [SystemSample] {
     var h: [SystemSample] = []

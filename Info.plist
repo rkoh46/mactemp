@@ -5,8 +5,8 @@
     <key>CFBundleName</key>            <string>MacTemp</string>
     <key>CFBundleDisplayName</key>     <string>MacTemp</string>
     <key>CFBundleIdentifier</key>      <string>local.mactemp</string>
-    <key>CFBundleVersion</key>         <string>1.7.1</string>
-    <key>CFBundleShortVersionString</key> <string>1.7.1</string>
+    <key>CFBundleVersion</key>         <string>1.7.2</string>
+    <key>CFBundleShortVersionString</key> <string>1.7.2</string>
     <key>CFBundleExecutable</key>      <string>MacTemp</string>
     <key>CFBundleIconFile</key>        <string>MacTemp</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
