@@ -36,3 +36,6 @@ probe_*.png
 fanctl
 bar_button.png
 win_*.png
+dist/win/
+windows/bin/
+windows/obj/
