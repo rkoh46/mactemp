@@ -308,9 +308,9 @@ final class SystemSampler {
             }
         }
         guard kr == KERN_SUCCESS else { return nil }
-        // matches Activity Monitor "Memory Used": app + linked + wired + compressed (purgeable excluded)
+        // Activity Monitor "Memory Used" = active + wired + compressed (inactive is cache, not "used")
         let pageSize = UInt64(vm_kernel_page_size)
-        let used = UInt64(stats.active_count) + UInt64(stats.inactive_count)
+        let used = UInt64(stats.active_count)
                  + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)
         return used * pageSize
     }
