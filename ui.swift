@@ -354,7 +354,7 @@ final class PanelGridView2: NSView {
         var ssdP = tempPanel("SSD", "internaldrive", .systemCyan, { $0.ssdTemp })
         if let free = last.diskFree, let tot = last.diskTotal, tot > 0 {
             let ratio = Double(free) / Double(tot)
-            ssdP.sub = [("\(formatBytes(free)) free / \(formatBytes(tot))",
+            ssdP.sub = [("\(formatBytes(free, decimal: true)) free / \(formatBytes(tot, decimal: true))",
                         ratio < 0.10 ? .systemRed : (ratio < 0.20 ? .systemYellow : .secondaryLabelColor))]
         }
         let panels = [

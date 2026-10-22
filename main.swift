@@ -164,7 +164,13 @@ struct SystemSample {
     var fanManual: Bool = false                                        // F*md != 0
 }
 
-func formatBytes(_ b: UInt64) -> String {
+func formatBytes(_ b: UInt64, decimal: Bool = false) -> String {
+    if decimal {
+        let gb = Double(b) / 1_000_000_000.0
+        if gb >= 10 { return String(format: "%.0fGB", gb) }
+        if gb >= 1  { return String(format: "%.1fGB", gb) }
+        return String(format: "%.0fMB", Double(b) / 1_000_000.0)
+    }
     let gb = Double(b) / 1_073_741_824.0
     if gb >= 10 { return String(format: "%.0fGB", gb) }
     if gb >= 1  { return String(format: "%.1fGB", gb) }
