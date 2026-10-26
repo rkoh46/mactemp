@@ -643,6 +643,18 @@ final class SettingsWindowController: NSWindowController {
             grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -16),
         ])
+
+        // Version footer
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let verLabel = NSTextField(labelWithString: "MacTemp \(version)")
+        verLabel.font = .systemFont(ofSize: 10)
+        verLabel.textColor = .secondaryLabelColor
+        verLabel.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(verLabel)
+        NSLayoutConstraint.activate([
+            verLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            verLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+        ])
     }
 
     private func refreshFanUI() {
