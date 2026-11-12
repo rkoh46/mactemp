@@ -9,7 +9,7 @@ A lightweight macOS menu bar monitor for Apple Silicon Macs: live **CPU / GPU / 
 ## Features
 
 - **Temps, RAM, swap, CPU load, disk, fans, network** in your menu bar, refreshed every 2 s
-- **Power & clocks**: CPU/GPU package power (W), CPU max core frequency (MHz), CPU/GPU busy % via IOReport residency — per-tier DVFS tables read straight from `pmgr`
+- **Power & clocks**: CPU/GPU package power (W), CPU max core frequency (MHz), CPU busy % via IOReport residency, GPU usage from the GPU driver's own utilisation counter — per-tier DVFS tables read straight from `pmgr`
 - **Fan control**: **Auto**, **Full Blast**, or a **custom RPM slider** (writes SMC fan targets; macOS authorization prompt required — see Fan control)
 - **Fan + network panels** added to the dropdown: now 6 macmon-style panels (CPU / GPU / SSD / RAM / FAN / NET)
 - **Threshold alerts**: a macOS notification when CPU/GPU/SSD crosses a configurable °C threshold (5-min cooldown per source)
@@ -35,12 +35,13 @@ MacTemp can override the fan curve: **Full Blast** pins both fans to max RPM, an
 | CPU hottest core | SMC — max single core key |
 | GPU temp | SMC — average of all `Tg*` keys |
 | SSD temp | IOHID — `NAND CH0` NVMe temperature sensor |
-| RAM used | Mach `host_statistics64` (active + inactive + wired + compressed, like Activity Monitor) |
+| RAM used | Mach `host_statistics64`: app memory (anonymous minus purgeable) + wired + compressed, Activity Monitor's "Memory Used" |
 | Swap | `sysctl vm.swapusage` (`xsw_usage`) |
 | Memory pressure | `sysctl kern.memorystatus_vm_pressure_level` |
 | CPU load | Per-core `PROCESSOR_CPU_LOAD_INFO` tick deltas |
 | CPU/GPU power | IOReport AppleCLPC aggregate energy counters (macOS 27) |
-| CPU/GPU busy % & MHz | IOReport core/GPU performance-state residencies × `pmgr` DVFS tables |
+| CPU busy %, CPU/GPU MHz | IOReport core/GPU performance-state residencies × `pmgr` DVFS tables |
+| GPU usage | IOAccelerator `PerformanceStatistics` → `Device Utilization %` (Activity Monitor's GPU History); P-state residency is not usage, since the GPU idles in a clocked state while driving displays |
 | Fan RPM / limits | SMC `F*Ac`, `F*Mn`, `F*Mx`, `F*Tg`, `F*md` |
 | Network throughput | `getifaddrs` byte-counter deltas (`en*`/`bridge*`) |
 | Disk free | `statfs("/")` |

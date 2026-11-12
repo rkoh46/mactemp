@@ -300,9 +300,30 @@ final class SystemSampler {
             s.cpuBusyPct = r.cpuBusyPct; s.cpuMaxMHz = r.cpuMaxMHz
             s.gpuBusyPct = r.gpuBusyPct; s.gpuMHz = r.gpuMHz
         }
+        // GPU usage is the driver's own utilisation (what Activity Monitor's GPU History shows). IOReport's
+        // performance-state residency is not usage: with displays attached the GPU sits in a low clock state
+        // almost all the time, so residency read ~99% busy while the GPU was ~35% utilised.
+        if let util = SystemSampler.gpuUtilization() { s.gpuBusyPct = util }
         let net = netSampler.sample()
         s.netDownBps = net.down; s.netUpBps = net.up
         return s
+    }
+
+    /// Highest "Device Utilization %" across IOAccelerator services (one per GPU), 0...100.
+    static func gpuUtilization() -> Double? {
+        guard let matching = IOServiceMatching("IOAccelerator") else { return nil }
+        var it: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &it) == KERN_SUCCESS else { return nil }
+        defer { IOObjectRelease(it) }
+        var best: Double?
+        while case let entry = IOIteratorNext(it), entry != 0 {
+            defer { IOObjectRelease(entry) }
+            guard let ref = IORegistryEntryCreateCFProperty(entry, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0),
+                  let stats = ref.takeRetainedValue() as? [String: Any],
+                  let v = (stats["Device Utilization %"] as? NSNumber)?.doubleValue else { continue }
+            best = max(best ?? 0, min(max(v, 0), 100))
+        }
+        return best
     }
 
     static func readRAMUsed() -> UInt64? {
@@ -314,10 +335,12 @@ final class SystemSampler {
             }
         }
         guard kr == KERN_SUCCESS else { return nil }
-        // Activity Monitor "Memory Used" = active + wired + compressed (inactive is cache, not "used")
+        // Activity Monitor "Memory Used" = App Memory + Wired + Compressed, where App Memory is anonymous
+        // (internal) pages minus purgeable ones. Counting only active pages missed inactive app memory, such as
+        // an idle VM's RAM, and read about 7 GB low on a 96 GB Mac.
         let pageSize = UInt64(vm_kernel_page_size)
-        let used = UInt64(stats.active_count)
-                 + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)
+        let app = UInt64(stats.internal_page_count) - min(UInt64(stats.purgeable_count), UInt64(stats.internal_page_count))
+        let used = app + UInt64(stats.wire_count) + UInt64(stats.compressor_page_count)
         return used * pageSize
     }
 

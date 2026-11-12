@@ -417,8 +417,11 @@ final class IOReportMetrics {
                     let nm = ioCFString(stateName(u, Int32(j)))
                     residencies.append((nm.isEmpty ? "S\(j)" : nm, stateRes(u, Int32(j))))
                 }
-                if let calc = calcResidencies(residencies, freqs: dvfs.gpuFreqs) {
-                    out.gpuBusyPct = calc.activeRatio * 100
+                // The GPU table starts with a 0 MHz entry for the off state; P1 is the first real clock (macmon
+                // uses gpu_freqs[1...] too). Without dropping it every state read one step slow.
+                let gpuFreqs = dvfs.gpuFreqs.first == 0 ? Array(dvfs.gpuFreqs.dropFirst()) : dvfs.gpuFreqs
+                if let calc = calcResidencies(residencies, freqs: gpuFreqs) {
+                    out.gpuBusyPct = calc.activeRatio * 100   // fallback only; main.swift uses IOAccelerator
                     out.gpuMHz = calc.avgFreq
                 }
             }
