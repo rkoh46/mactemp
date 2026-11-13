@@ -11,7 +11,7 @@ A lightweight macOS menu bar monitor for Apple Silicon Macs: live **CPU / GPU / 
 - **Temps, RAM, swap, CPU load, disk, fans, network** in your menu bar, refreshed every 2 s
 - **Power & clocks**: CPU/GPU package power (W), CPU max core frequency (MHz), CPU busy % via IOReport residency, GPU usage from the GPU driver's own utilisation counter — per-tier DVFS tables read straight from `pmgr`
 - **Fan control**: **Auto**, **Full Blast**, or a **custom RPM slider** (writes SMC fan targets; macOS authorization prompt required — see Fan control)
-- **Fan + network panels** added to the dropdown: now 6 macmon-style panels (CPU / GPU / SSD / RAM / FAN / NET)
+- **Fan + network panels** added to the dropdown: now 6 macmon-style panels (CPU / GPU / SSD / RAM / FAN / NET); the RAM panel leads with the same used figure as the menu bar (`RAM 52GB 54%`), with the total and swap (`SW used / total`) on the line below
 - **Threshold alerts**: a macOS notification when CPU/GPU/SSD crosses a configurable °C threshold (5-min cooldown per source)
 - **Settings window** (⌘,): °C/°F, menu-bar layout incl. **graph sparkline** mode with selectable metric, refresh interval, alert threshold, **launch at login**, fan controls
 - **Menu-bar mini-graph**: sparkline of any metric drawn right into the status item

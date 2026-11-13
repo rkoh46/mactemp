@@ -361,10 +361,12 @@ final class PanelGridView2: NSView {
             cpuP, gpuP,
             ssdP,
             Panel(title: "RAM", symbol: "memorychip", symbolColor: .systemIndigo,
-                  header: [("\(Int(ramPct))%", PanelGridView2.pctColor(ramPct)),
-                           ("SW \(Int(swapPct))%", PanelGridView2.pctColor(swapPct))],
-                  sub: [((last.swapUsed.map { formatBytes($0) } ?? "--")
-                        + " / " + (last.swapTotal.map { formatBytes($0) } ?? "--") + " swap", .secondaryLabelColor)],
+                  // The header leads with the figure the menu bar shows (same sample, same text), then its
+                  // share of the total; swap sits on the detail line under its own label.
+                  header: [(last.ramUsedText, PanelGridView2.pctColor(ramPct)),
+                           ("\(Int(ramPct))%", PanelGridView2.pctColor(ramPct))],
+                  sub: [("of \(last.ramTotalText) · SW \(last.swapUsedText) / \(last.swapTotalText)", .secondaryLabelColor),
+                        ("\(Int(swapPct))%", PanelGridView2.pctColor(swapPct))],
                   series: ramSeries,
                   barColors: ramSeries.map { PanelGridView2.pctColor($0 * 100) }),
             fanPanel, netPanel,

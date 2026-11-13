@@ -164,6 +164,15 @@ struct SystemSample {
     var fanManual: Bool = false                                        // F*md != 0
 }
 
+extension SystemSample {
+    // The one place RAM and swap amounts become text: the menu bar, the RAM panel and the debug dump all read
+    // these, so they cannot disagree by unit or rounding.
+    var ramUsedText: String { ramUsed.map { formatBytes($0) } ?? "--" }
+    var ramTotalText: String { ramTotal.map { formatBytes($0) } ?? "--" }
+    var swapUsedText: String { swapUsed.map { formatBytes($0) } ?? "--" }
+    var swapTotalText: String { swapTotal.map { formatBytes($0) } ?? "--" }
+}
+
 func formatBytes(_ b: UInt64, decimal: Bool = false) -> String {
     if decimal {
         let gb = Double(b) / 1_000_000_000.0
@@ -564,7 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         func f(_ v: Double?) -> String { v.map { unit.format($0) } ?? "--" }
         func level(_ v: Double?) -> TempLevel { v.map { TempLevel.level($0) } ?? .normal }
-        let ramText = (s.ramUsed.map { formatBytes($0) }) ?? "--"
+        let ramText = s.ramUsedText
 
         // Menu bar text, colored per temperature level (yellow = warning, red = hot).
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
@@ -746,8 +755,8 @@ if ProcessInfo.processInfo.environment["MAC_TEMP_DUMP"] != nil {
         func f(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "--" }
         let fansText = x.fanRpm.map { String(format: "%.0f", $0) }.joined(separator: "/")
         print("sample\(i): CPU=\(f(x.cpuTemp)) GPU=\(f(x.gpuTemp)) SSD=\(f(x.ssdTemp)) "
-            + "RAM=\(x.ramUsed.map { formatBytes($0) } ?? "--")/\(x.ramTotal.map { formatBytes($0) } ?? "--") "
-            + "Swap=\(x.swapUsed.map { formatBytes($0) } ?? "--") Pressure=\(x.pressure.map(String.init) ?? "--") "
+            + "RAM=\(x.ramUsedText)/\(x.ramTotalText) "
+            + "Swap=\(x.swapUsedText)/\(x.swapTotalText) Pressure=\(x.pressure.map(String.init) ?? "--") "
             + "CPULoad=\(x.cpuLoad.map { String(format: "%.1f%%", $0) } ?? "--") "
             + "Disk=\(x.diskFree.map { formatBytes($0) } ?? "--") free "
             + "MaxCore=\(f(x.cpuMaxCoreTemp)) CPUpct=\(f(x.cpuBusyPct)) CPUW=\(f(x.cpuPowerW)) CPUMHz=\(f(x.cpuMaxMHz)) "
